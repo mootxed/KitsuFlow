@@ -54,6 +54,7 @@ test.beforeEach(async ({ page }) => {
     if (url.pathname === '/repos/acme/repo/issues' && method === 'POST')
       return route.fulfill({ status: 201, json: issue(6, 'Draft the release notes') });
     if (url.pathname === '/repos/acme/repo/labels') return route.fulfill({ json: [] });
+    if (url.pathname === '/repos/acme/repo/assignees') return route.fulfill({ json: [] });
     if (url.pathname.startsWith('/repos/acme/repo/issues/') && method === 'PATCH')
       return route.fulfill({ json: issue(6, 'Draft the release notes') });
     return route.fulfill({ status: 404, json: { message: `Unhandled ${method} ${url.pathname}` } });
