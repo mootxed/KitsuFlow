@@ -1,6 +1,6 @@
-# Kitsune Manager
+# KitsuFlow
 
-Kitsune Manager — компактный local-first менеджер задач для разработчиков. GitHub Issues остаются источником истины для задач репозиториев, а быстрые личные заметки хранятся только в браузере и при необходимости публикуются как Issues.
+KitsuFlow — компактный local-first менеджер задач для разработчиков. GitHub Issues остаются источником истины для задач репозиториев, а быстрые личные заметки хранятся только в браузере и при необходимости публикуются как Issues.
 
 Это полностью статическое React-приложение: backend, PAT и `client_secret` не нужны. Проект можно разместить на GitHub Pages.
 
@@ -10,11 +10,11 @@ Kitsune Manager — компактный local-first менеджер задач
 - получение установок GitHub App и выбор закреплённых репозиториев;
 - загрузка и локальный кеш GitHub Issues без Pull Requests;
 - локальные заметки, теги и чек-листы в IndexedDB;
-- статусы и приоритеты через системные GitHub labels с префиксом `km:`;
+- статусы и приоритеты через системные GitHub labels с префиксом `kf:` (сохранена совместимость со старыми `km:`);
 - отдельная несинхронизируемая секция «Под вопросом»;
 - публикация заметки в Issue с подтверждением и сохранением исходника до успеха;
-- offline outbox, последовательная отправка, backoff, обработка 401/rate limit и неоднозначного создания;
-- вкладки, правая панель, быстрое создание по `C` и drag-and-drop;
+- offline outbox, последовательная отправка, backoff, различение 401/rate limit/permission denied/exhausted и неоднозначного создания;
+- вкладки, правая панель, быстрое создание по `C` и drag-and-drop с атомарным обновлением статуса и приоритета;
 - PWA, кеш оболочки и уведомление о новой версии Service Worker.
 
 GitHub Projects, комментарии, сроки, мобильный UX, синхронизация заметок между устройствами и backend намеренно не входят в первую версию.
@@ -61,14 +61,14 @@ VITE_GITHUB_APP_SLUG=your-app-slug
 # Альтернатива slug — полный URL установки:
 # VITE_GITHUB_APP_INSTALL_URL=https://github.com/apps/your-app/installations/new
 VITE_BASE_PATH=/
-VITE_APP_NAME=Kitsune Manager
+VITE_APP_NAME=KitsuFlow
 ```
 
-После Device Flow клиент проверяет токен запросом текущего пользователя. Токен живёт только в `sessionStorage`, не попадает в Zustand persistence, IndexedDB, URL или логи и удаляется при выходе/401.
+После Device Flow клиент проверяет токен запросом текущего пользователя. Токен живёт только в `sessionStorage` (ключ `kitsuflow.github.access-token`), не попадает в Zustand persistence, IndexedDB, URL или логи и удаляется при выходе/401.
 
-## GitHub Pages
+## GitHub Pages и ограничения Device Flow
 
-Workflow [deploy-pages.yml](.github/workflows/deploy-pages.yml) публикует `dist` при push в `master` или `main`.
+Workflow [deploy-pages.yml](.github/workflows/deploy-pages.yml) публикует `dist` при push в `main`.
 
 1. В **Settings → Pages → Build and deployment** выберите **GitHub Actions**.
 2. В **Settings → Secrets and variables → Actions → Variables** добавьте:
@@ -77,17 +77,23 @@ Workflow [deploy-pages.yml](.github/workflows/deploy-pages.yml) публикуе
 3. Добавьте Pages URL в Homepage URL GitHub App.
 4. Выполните push в основную ветку.
 
+> **Обратите внимание:** Прямой Device Flow непосредственно из браузера на GitHub Pages может быть заблокирован политикой CORS браузера для эндпоинтов `https://github.com/login/device/code` и `https://github.com/login/oauth/access_token`. Настоящее поведение на production build следует дополнительно протестировать с реальным GitHub App.
+
 Workflow передаёт `VITE_BASE_PATH=/<repository-name>/`. Приложение использует `HashRouter`/hash-навигацию и не требует серверного fallback. Никаких секретов в workflow нет: `client_id` и URL установки публичны.
 
-## Хранение данных
+## Хранение данных и миграция
 
-| Место            | Данные                                                                                                   |
-| ---------------- | -------------------------------------------------------------------------------------------------------- |
-| GitHub           | Issues, state, обычные labels, `km:status:*`, `km:priority:*`, assignees                                 |
-| IndexedDB        | локальные заметки, кеш Issues/репозиториев/labels, outbox, вкладки, настройки и метаданные синхронизации |
-| `sessionStorage` | только OAuth access token активной вкладки браузера                                                      |
+| Место            | Данные                                                                                                     |
+| ---------------- | ---------------------------------------------------------------------------------------------------------- |
+| GitHub           | Issues, state, обычные labels, `kf:status:*`, `kf:priority:*`, assignees                                   |
+| IndexedDB        | `kitsuflow-db`: локальные заметки, кеш Issues/репозиториев/labels, outbox, вкладки, настройки и метаданные |
+| `sessionStorage` | `kitsuflow.github.access-token`: только OAuth access token активной вкладки браузера                       |
 
-Локальные заметки не синхронизируются между устройствами: у статического сайта нет собственного сервера и записи без репозитория сознательно не отправляются в GitHub. Экспорт/импорт пока не реализован.
+### Автоматическая миграция IndexedDB
+
+При первом запуске новая версия обнаруживает существующую базу данных `kitsune-manager` и транзакционно копирует все данные (`localNotes`, `outbox`, `githubIssuesCache`, `tabs` и др.) в `kitsuflow-db`. Резервная копия `kitsune-manager` сохраняется нетронутой.
+
+Локальные заметки не синхронизируются между устройствами: у статического сайта нет собственного сервера и записи без репозитория сознательно не отправляются в GitHub.
 
 Подробнее: [архитектура](docs/architecture.md), [модель данных](docs/data-model.md), [GitHub sync](docs/github-sync.md), [статусы](docs/status-mapping.md).
 
@@ -95,7 +101,13 @@ Workflow передаёт `VITE_BASE_PATH=/<repository-name>/`. Приложен
 
 Service Worker кеширует только оболочку приложения; GitHub API используется в режиме Network Only, а предметный кеш ведёт Dexie. Операции выполняются последовательно. При отсутствии сети новые Issues остаются как временные карточки. После подтверждённого ответа GitHub временная карточка или исходная заметка заменяется настоящим Issue.
 
-Если соединение оборвалось после начала `POST /issues`, автоматический повтор блокируется как `attention`: пользователь должен проверить GitHub, чтобы не создать дубликат. При 401 токен удаляется, но очередь сохраняется. При rate limit сохраняется время следующей попытки.
+Состояния outbox:
+
+- `pending` — готова к отправке;
+- `syncing` — выполняется;
+- `failed` — временная ошибка (например rate-limit) с запланированным временем повтора (`nextAttemptAt`);
+- `attention` — ошибка доступа (403/404/422) или неопределённость сетевого обрыва;
+- `exhausted` — превышено количество попыток (`maxSyncAttempts`). Ручной retry сбрасывает статус в `pending`.
 
 ## Безопасность
 
@@ -108,7 +120,7 @@ Service Worker кеширует только оболочку приложени
 
 ## Сброс локальных данных
 
-Откройте DevTools → Application → Storage → IndexedDB → `kitsune-manager` → Delete database, затем очистите данные сайта. Это безвозвратно удалит локальные заметки и outbox, но не изменит GitHub Issues. Обычный выход удаляет только токен активной сессии и безопаснее полного сброса.
+Откройте DevTools → Application → Storage → IndexedDB → `kitsuflow-db` → Delete database, затем очистите данные сайта. Это безвозвратно удалит локальные заметки и outbox, но не изменит GitHub Issues. Обычный выход удаляет только токен активной сессии и безопаснее полного сброса.
 
 ## Известные ограничения
 

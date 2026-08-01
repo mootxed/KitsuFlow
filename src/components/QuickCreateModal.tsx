@@ -16,34 +16,66 @@ export function QuickCreateModal() {
     useShallow((state) => state.repositories.filter((repo) => repo.pinned)),
   );
   const createTask = useAppStore((state) => state.createTask);
+  const getRepositoryLabels = useAppStore((state) => state.getRepositoryLabels);
+
   const titleRef = useRef<HTMLInputElement>(null);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [status, setStatus] = useState<TaskStatus>('todo');
   const [repository, setRepository] = useState('');
-  const [tags, setTags] = useState('');
+  const [tags, setTags] = useState(''); // Для локальных тегов (свободный ввод)
+  const [availableLabels, setAvailableLabels] = useState<Array<{ name: string; color: string }>>(
+    [],
+  );
+  const [selectedLabels, setSelectedLabels] = useState<string[]>([]); // Для GitHub labels
   const [checklist, setChecklist] = useState('');
   const [priority, setPriority] = useState<IssuePriority>('none');
   const [assignee, setAssignee] = useState('');
+
   useEffect(() => {
     if (open) window.setTimeout(() => titleRef.current?.focus(), 0);
   }, [open]);
+
   useEffect(() => {
     if (!repository && status === 'question') setStatus('todo');
   }, [repository, status]);
+
+  useEffect(() => {
+    if (repository) {
+      void getRepositoryLabels(repository).then((labels) => {
+        setAvailableLabels(labels);
+      });
+    } else {
+      setAvailableLabels([]);
+      setSelectedLabels([]);
+    }
+  }, [repository, getRepositoryLabels]);
+
   if (!open) return null;
+
+  const toggleLabel = (labelName: string) => {
+    setSelectedLabels((prev) =>
+      prev.includes(labelName) ? prev.filter((name) => name !== labelName) : [...prev, labelName],
+    );
+  };
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!title.trim()) return;
+
+    const finalTags = repository
+      ? selectedLabels
+      : tags
+          .split(',')
+          .map((tag) => tag.trim())
+          .filter(Boolean);
+
     await createTask({
       title,
       description,
       status,
       repositoryFullName: repository || null,
-      tags: tags
-        .split(',')
-        .map((tag) => tag.trim())
-        .filter(Boolean),
+      tags: finalTags,
       checklist: checklist
         .split('\n')
         .map((text) => text.trim())
@@ -52,15 +84,18 @@ export function QuickCreateModal() {
       priority,
       assignees: assignee.trim() ? [assignee.trim()] : [],
     });
+
     setTitle('');
     setDescription('');
     setStatus('todo');
     setRepository('');
     setTags('');
+    setSelectedLabels([]);
     setChecklist('');
     setPriority('none');
     setAssignee('');
   };
+
   return (
     <div
       className="modal-backdrop"
@@ -127,11 +162,39 @@ export function QuickCreateModal() {
         </div>
         <label>
           {repository ? 'GitHub labels' : 'Локальные теги'}
-          <input
-            value={tags}
-            onChange={(event) => setTags(event.target.value)}
-            placeholder="bug, docs"
-          />
+          {repository ? (
+            <div className="labels-selector">
+              {availableLabels.length === 0 ? (
+                <span className="no-labels-hint">
+                  Нет доступных меток для выбранного репозитория
+                </span>
+              ) : (
+                availableLabels.map((lbl) => {
+                  const isSelected = selectedLabels.includes(lbl.name);
+                  return (
+                    <button
+                      key={lbl.name}
+                      type="button"
+                      className={`label-chip ${isSelected ? 'selected' : ''}`}
+                      style={{
+                        borderColor: `#${lbl.color}`,
+                        backgroundColor: isSelected ? `#${lbl.color}33` : 'transparent',
+                      }}
+                      onClick={() => toggleLabel(lbl.name)}
+                    >
+                      {lbl.name}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          ) : (
+            <input
+              value={tags}
+              onChange={(event) => setTags(event.target.value)}
+              placeholder="bug, docs"
+            />
+          )}
         </label>
         <label>
           Чек-лист

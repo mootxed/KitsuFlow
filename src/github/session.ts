@@ -1,4 +1,4 @@
-const TOKEN_KEY = 'kitsune.github.access-token';
+const TOKEN_KEY = 'kitsuflow.github.access-token';
 
 export const session = {
   getToken(): string | null {

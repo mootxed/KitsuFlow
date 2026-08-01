@@ -1006,3 +1006,43 @@ kbd {
     display: none;
   }
 }
+
+.labels-selector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 120px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  background: var(--surface);
+}
+
+.no-labels-hint {
+  color: var(--muted);
+  font-size: 10px;
+  font-style: italic;
+}
+
+.label-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 500;
+  cursor: pointer;
+  background: transparent;
+  transition: all 0.15s ease;
+}
+
+.label-chip:hover {
+  opacity: 0.8;
+}
+
+.label-chip.selected {
+  font-weight: 700;
+}

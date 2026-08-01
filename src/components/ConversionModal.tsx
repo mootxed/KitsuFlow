@@ -18,17 +18,42 @@ export function ConversionModal() {
   );
   const setNoteId = useAppStore((state) => state.setConversionNoteId);
   const confirm = useAppStore((state) => state.confirmConversion);
+  const getRepositoryLabels = useAppStore((state) => state.getRepositoryLabels);
+
   const [repository, setRepository] = useState('');
   const [status, setStatus] = useState<Exclude<TaskStatus, 'question'>>('todo');
   const [priority, setPriority] = useState<IssuePriority>('none');
-  const [labels, setLabels] = useState('');
+  const [availableLabels, setAvailableLabels] = useState<Array<{ name: string; color: string }>>(
+    [],
+  );
+  const [selectedLabels, setSelectedLabels] = useState<string[]>([]);
   const [assignee, setAssignee] = useState('');
+
   const initialRepository =
     targetRepository || note?.repositoryFullName || repositories[0]?.fullName || '';
+
   useEffect(() => {
     if (note) setRepository(initialRepository);
   }, [note, initialRepository]);
+
+  useEffect(() => {
+    if (repository) {
+      void getRepositoryLabels(repository).then((labels) => {
+        setAvailableLabels(labels);
+      });
+    } else {
+      setAvailableLabels([]);
+    }
+  }, [repository, getRepositoryLabels]);
+
   if (!noteId || !note) return null;
+
+  const toggleLabel = (labelName: string) => {
+    setSelectedLabels((prev) =>
+      prev.includes(labelName) ? prev.filter((name) => name !== labelName) : [...prev, labelName],
+    );
+  };
+
   return (
     <div className="modal-backdrop">
       <form
@@ -40,10 +65,7 @@ export function ConversionModal() {
               repositoryFullName: repository,
               status,
               priority,
-              labels: labels
-                .split(',')
-                .map((label) => label.trim())
-                .filter(Boolean),
+              labels: selectedLabels,
               assignees: assignee ? [assignee] : [],
             });
         }}
@@ -104,11 +126,29 @@ export function ConversionModal() {
         </div>
         <label>
           GitHub labels
-          <input
-            value={labels}
-            onChange={(event) => setLabels(event.target.value)}
-            placeholder="Только существующие labels"
-          />
+          <div className="labels-selector">
+            {availableLabels.length === 0 ? (
+              <span className="no-labels-hint">Нет доступных меток для выбранного репозитория</span>
+            ) : (
+              availableLabels.map((lbl) => {
+                const isSelected = selectedLabels.includes(lbl.name);
+                return (
+                  <button
+                    key={lbl.name}
+                    type="button"
+                    className={`label-chip ${isSelected ? 'selected' : ''}`}
+                    style={{
+                      borderColor: `#${lbl.color}`,
+                      backgroundColor: isSelected ? `#${lbl.color}33` : 'transparent',
+                    }}
+                    onClick={() => toggleLabel(lbl.name)}
+                  >
+                    {lbl.name}
+                  </button>
+                );
+              })
+            )}
+          </div>
         </label>
         <label>
           Assignee

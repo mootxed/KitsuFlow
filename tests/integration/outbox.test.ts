@@ -4,8 +4,9 @@ import { createLocalNote } from '../../src/domain/notes';
 import { normalizeIssue } from '../../src/domain/github-mapping';
 import { OutboxProcessor } from '../../src/sync/outbox';
 import { apiIssue } from '../fixtures';
+import { APP_CONFIG } from '../../src/config';
 
-describe('outbox durability', () => {
+describe('outbox durability & error handling', () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     await Promise.all(db.tables.map((table) => table.clear()));
@@ -157,5 +158,72 @@ describe('outbox durability', () => {
     await processor.process();
     expect(events).toContain('rate-limited');
     expect((await db.outbox.toArray())[0]?.nextAttemptAt).toBeDefined();
+  });
+
+  it('transitions to exhausted state after maxSyncAttempts', async () => {
+    const api = {
+      updateIssue: async () => {
+        throw new Error('500 Server Error');
+      },
+    };
+    const processor = new OutboxProcessor(
+      () => api as any,
+      () => undefined,
+    );
+    const op = await processor.enqueue({
+      type: 'update_issue',
+      entityKey: 'acme/repo#3',
+      repositoryFullName: 'acme/repo',
+      payload: { issueNumber: 3, title: 'Fails repeatedly' },
+    });
+
+    // Simulate attempts up to maxSyncAttempts (4)
+    await db.outbox.update(op.id, { attemptCount: APP_CONFIG.maxSyncAttempts - 1 });
+    await processor.process();
+
+    const result = await db.outbox.get(op.id);
+    expect(result?.state).toBe('exhausted');
+    expect(result?.attemptCount).toBe(APP_CONFIG.maxSyncAttempts);
+
+    // Automatic process should not select exhausted operations
+    const updateSpy = vi.spyOn(api, 'updateIssue');
+    await processor.process();
+    expect(updateSpy).not.toHaveBeenCalled();
+
+    // Manual retry should reset state to pending and try again
+    await processor.retry(op.id);
+    expect(updateSpy).toHaveBeenCalledOnce();
+  });
+
+  it('distinguishes 403 permission-denied from rate limit and does not auto-retry', async () => {
+    const events: string[] = [];
+    const api = {
+      updateIssue: async () => {
+        throw Object.assign(new Error('Resource not accessible by integration'), {
+          status: 403,
+          response: {
+            headers: { 'x-ratelimit-remaining': '60' },
+            data: { message: 'Resource not accessible' },
+          },
+        });
+      },
+    };
+    const processor = new OutboxProcessor(
+      () => api as any,
+      (event) => events.push(event.type),
+    );
+    await processor.enqueue({
+      type: 'update_issue',
+      entityKey: 'acme/repo#4',
+      repositoryFullName: 'acme/repo',
+      payload: { issueNumber: 4, title: 'Permission check' },
+    });
+
+    await processor.process();
+
+    expect(events).toContain('permission-denied');
+    const result = (await db.outbox.toArray())[0];
+    expect(result?.state).toBe('attention');
+    expect(result?.lastError).toContain('Отказано в доступе');
   });
 });

@@ -90,7 +90,7 @@ export interface WorkspaceTab {
 }
 
 export type OutboxType = 'create_issue' | 'update_issue' | 'convert_note' | 'close_and_copy';
-export type OutboxState = 'pending' | 'syncing' | 'failed' | 'attention';
+export type OutboxState = 'pending' | 'syncing' | 'failed' | 'attention' | 'exhausted';
 
 export interface OutboxOperation {
   id: string;

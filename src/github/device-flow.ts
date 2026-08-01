@@ -48,13 +48,35 @@ async function githubFormPost<T>(
   body: URLSearchParams,
   signal: AbortSignal,
 ): Promise<T> {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
-    signal,
-  });
-  if (!response.ok) throw new Error(`GitHub OAuth вернул ${response.status}`);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+      signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    // Различаем сетевую ошибку и возможную CORS-ошибку браузера
+    if (!navigator.onLine) {
+      throw new Error('Отсутствует подключение к интернету.');
+    }
+    throw new Error(
+      `Сетевая ошибка или CORS-блокировка браузера при запросе к ${url}. Если вы используете GitHub Pages, прямые браузерные запросы к OAuth эндпоинтам GitHub блокируются CORS браузером.`,
+    );
+  }
+
+  if (!response.ok) {
+    if (response.status === 400 || response.status === 404) {
+      throw new Error(`Неверный Client ID или GitHub App не существует (HTTP ${response.status}).`);
+    }
+    if (response.status === 403) {
+      throw new Error(`Доступ к GitHub OAuth заблокирован или превышен лимит (HTTP 403).`);
+    }
+    throw new Error(`GitHub OAuth вернул ошибку HTTP ${response.status}`);
+  }
+
   return (await response.json()) as T;
 }
 
@@ -90,7 +112,14 @@ export class DeviceFlowController {
         new URLSearchParams({ client_id: this.clientId }),
         signal,
       );
-      if (device.error) throw new Error(device.error_description || device.error);
+      if (device.error) {
+        if (device.error === 'unauthorized_client' || device.error === 'invalid_client') {
+          throw new Error(
+            `Недействительный Client ID GitHub App (${device.error_description || device.error}).`,
+          );
+        }
+        throw new Error(device.error_description || device.error);
+      }
       const expiresAt = Date.now() + device.expires_in * 1000;
       let intervalSeconds = Math.max(device.interval || 5, 1);
       onState({
@@ -122,6 +151,10 @@ export class DeviceFlowController {
         }
         if (token.error === 'expired_token') {
           onState({ phase: 'expired', message: 'Код GitHub истёк. Запросите новый.' });
+          return null;
+        }
+        if (token.error === 'access_denied') {
+          onState({ phase: 'error', message: 'Авторизация отклонена пользователем на GitHub.' });
           return null;
         }
         throw new Error(token.error_description || token.error || 'Неизвестная ошибка авторизации');

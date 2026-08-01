@@ -1,4 +1,4 @@
-import { APP_CONFIG, SYSTEM_LABEL_PREFIX } from '../config';
+import { APP_CONFIG, SYSTEM_LABEL_PREFIXES, isSystemLabel } from '../config';
 import type { GitHubIssue, IssueLabel, IssuePriority, TaskStatus } from './types';
 
 export interface ApiIssue {
@@ -20,24 +20,42 @@ export interface ApiIssue {
 const labelNames = (labels: ApiIssue['labels']) =>
   labels.map((label) => (typeof label === 'string' ? label : label.name || '')).filter(Boolean);
 
+/** Проверяет, является ли имя label системным label статуса (оба префикса). */
+function isStatusLabel(name: string): boolean {
+  return (
+    name === APP_CONFIG.labels.status.inProgress ||
+    name === APP_CONFIG.labels.status.postponed ||
+    name.startsWith('km:status:') ||
+    name.startsWith('kf:status:')
+  );
+}
+
+/** Проверяет, является ли имя label системным label приоритета (оба префикса). */
+function isPriorityLabel(name: string): boolean {
+  return (
+    Object.values(APP_CONFIG.labels.priority).includes(name as any) ||
+    name === 'km:priority:low' ||
+    name === 'km:priority:medium' ||
+    name === 'km:priority:high' ||
+    name === 'km:priority:urgent'
+  );
+}
+
 export function deriveStatus(issue: Pick<ApiIssue, 'state' | 'labels'>): {
   status: Exclude<TaskStatus, 'question'>;
   conflict: boolean;
 } {
   if (issue.state === 'closed') return { status: 'done', conflict: false };
   const names = labelNames(issue.labels);
-  const statusLabels = [
-    APP_CONFIG.labels.status.inProgress,
-    APP_CONFIG.labels.status.postponed,
-  ].filter((name) => names.includes(name));
+  // Распознаём оба префикса: kf: (новый) и km: (устаревший)
+  const inProgress =
+    names.includes(APP_CONFIG.labels.status.inProgress) || names.includes('km:status:in-progress');
+  const postponed =
+    names.includes(APP_CONFIG.labels.status.postponed) || names.includes('km:status:postponed');
+  const count = (inProgress ? 1 : 0) + (postponed ? 1 : 0);
   return {
-    status:
-      statusLabels[0] === APP_CONFIG.labels.status.inProgress
-        ? 'in_progress'
-        : statusLabels[0] === APP_CONFIG.labels.status.postponed
-          ? 'postponed'
-          : 'todo',
-    conflict: statusLabels.length > 1,
+    status: inProgress ? 'in_progress' : postponed ? 'postponed' : 'todo',
+    conflict: count > 1,
   };
 }
 
@@ -46,12 +64,25 @@ export function derivePriority(labels: ApiIssue['labels']): {
   conflict: boolean;
 } {
   const names = labelNames(labels);
-  const priorities = Object.entries(APP_CONFIG.labels.priority).filter(([, name]) =>
+  // Текущие kf: приоритеты
+  const kfPriorities = Object.entries(APP_CONFIG.labels.priority).filter(([, name]) =>
     names.includes(name),
   );
+  // Устаревшие km: приоритеты — маппинг в ключи IssuePriority
+  const legacyMap: Record<string, IssuePriority> = {
+    'km:priority:low': 'low',
+    'km:priority:medium': 'medium',
+    'km:priority:high': 'high',
+    'km:priority:urgent': 'urgent',
+  };
+  const legacyPriorities = Object.entries(legacyMap).filter(([name]) => names.includes(name));
+  const allPriorities: IssuePriority[] = [
+    ...kfPriorities.map(([key]) => key as IssuePriority),
+    ...legacyPriorities.map(([, val]) => val),
+  ];
   return {
-    priority: (priorities[0]?.[0] as IssuePriority | undefined) || 'none',
-    conflict: priorities.length > 1,
+    priority: allPriorities[0] || 'none',
+    conflict: allPriorities.length > 1,
   };
 }
 
@@ -91,23 +122,49 @@ export function normalizeIssue(repositoryFullName: string, issue: ApiIssue): Git
   };
 }
 
+/** Скрывает системные labels обоих префиксов (kf: и km:) из пользовательского списка. */
 export function visibleLabels(labels: IssueLabel[]): IssueLabel[] {
-  return labels.filter((label) => !label.name.startsWith(SYSTEM_LABEL_PREFIX));
+  return labels.filter((label) => !isSystemLabel(label.name));
 }
 
+/** Удаляет системные labels статуса обоих префиксов и добавляет нужный kf:. */
 export function labelsForStatus(
   current: string[],
   status: Exclude<TaskStatus, 'question'>,
 ): string[] {
-  const withoutStatus = current.filter((name) => !name.startsWith('km:status:'));
+  const withoutStatus = current.filter((name) => !isStatusLabel(name));
   if (status === 'in_progress') return [...withoutStatus, APP_CONFIG.labels.status.inProgress];
   if (status === 'postponed') return [...withoutStatus, APP_CONFIG.labels.status.postponed];
   return withoutStatus;
 }
 
+/** Удаляет системные labels приоритета обоих префиксов и добавляет нужный kf:. */
 export function labelsForPriority(current: string[], priority: IssuePriority): string[] {
-  const withoutPriority = current.filter((name) => !name.startsWith('km:priority:'));
+  const withoutPriority = current.filter((name) => !isPriorityLabel(name));
   const configured =
     APP_CONFIG.labels.priority[priority as keyof typeof APP_CONFIG.labels.priority];
   return configured ? [...withoutPriority, configured] : withoutPriority;
 }
+
+/**
+ * Атомарно вычисляет итоговый массив labels при одновременном изменении
+ * статуса И приоритета. Удаляет все старые системные labels обоих префиксов
+ * и добавляет новые kf:* за один проход.
+ */
+export function labelsForMove(
+  current: string[],
+  status: Exclude<TaskStatus, 'question'>,
+  priority: IssuePriority,
+): string[] {
+  const withoutSystem = current.filter((name) => !isStatusLabel(name) && !isPriorityLabel(name));
+  let result = withoutSystem;
+  if (status === 'in_progress') result = [...result, APP_CONFIG.labels.status.inProgress];
+  else if (status === 'postponed') result = [...result, APP_CONFIG.labels.status.postponed];
+  const priorityLabel =
+    APP_CONFIG.labels.priority[priority as keyof typeof APP_CONFIG.labels.priority];
+  if (priorityLabel) result = [...result, priorityLabel];
+  return result;
+}
+
+// Re-export for convenience
+export { isSystemLabel, SYSTEM_LABEL_PREFIXES };

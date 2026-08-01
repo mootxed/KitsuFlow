@@ -32,7 +32,7 @@ export function App() {
   const logout = useAppStore((state) => state.logout);
   const requestConversion = useAppStore((state) => state.requestConversion);
   const changeIssueStatus = useAppStore((state) => state.changeIssueStatus);
-  const changeIssuePriority = useAppStore((state) => state.changeIssuePriority);
+  const moveIssue = useAppStore((state) => state.moveIssue);
   const moveIssueToQuestion = useAppStore((state) => state.moveIssueToQuestion);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const {
@@ -97,14 +97,17 @@ export function App() {
     const issue = source.item as GitHubIssue;
     if (target.type === 'status') {
       if (target.status === 'question') {
-        if (window.confirm('Закрыть GitHub Issue и создать локальную копию в “Под вопросом”?')) {
+        if (window.confirm('Закрыть GitHub Issue и создать локальную копию в "Под вопросом"?')) {
           void moveIssueToQuestion(issue);
         }
       } else void changeIssueStatus(issue, target.status as any);
     }
     if (target.type === 'priority') {
-      void changeIssueStatus(issue, target.status as any);
-      void changeIssuePriority(issue, target.priority as any);
+      // Атомарный перенос: один вызов, одна outbox-операция
+      void moveIssue(issue, {
+        status: target.status as Exclude<import('./domain/types').TaskStatus, 'question'>,
+        priority: target.priority as import('./domain/types').IssuePriority,
+      });
     }
   };
 

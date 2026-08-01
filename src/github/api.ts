@@ -1,6 +1,11 @@
 import { Octokit } from '@octokit/rest';
 import { APP_CONFIG, SYSTEM_LABEL_DEFINITIONS } from '../config';
-import { isPullRequest, normalizeIssue, type ApiIssue } from '../domain/github-mapping';
+import {
+  isPullRequest,
+  labelsForStatus,
+  normalizeIssue,
+  type ApiIssue,
+} from '../domain/github-mapping';
 import type { GitHubIssue, GitHubUser, IssueLabel, Repository, TaskStatus } from '../domain/types';
 
 const splitRepository = (fullName: string): [string, string] => {
@@ -15,7 +20,7 @@ export class GitHubApi {
   constructor(token: string) {
     this.octokit = new Octokit({
       auth: token,
-      userAgent: `${APP_CONFIG.name}/0.1`,
+      userAgent: `KitsuFlow/0.1`,
       request: {
         headers: {
           accept: APP_CONFIG.github.accept,
@@ -164,11 +169,10 @@ export class GitHubApi {
     issue: GitHubIssue,
     status: Exclude<TaskStatus, 'question'>,
   ): Promise<GitHubIssue> {
-    const labels = issue.labels
-      .map((label) => label.name)
-      .filter((name) => !name.startsWith('km:status:'));
-    if (status === 'in_progress') labels.push(APP_CONFIG.labels.status.inProgress);
-    if (status === 'postponed') labels.push(APP_CONFIG.labels.status.postponed);
+    const labels = labelsForStatus(
+      issue.labels.map((label) => label.name),
+      status,
+    );
     return this.updateIssue(issue.repositoryFullName, issue.issueNumber, {
       labels,
       state: status === 'done' ? 'closed' : 'open',

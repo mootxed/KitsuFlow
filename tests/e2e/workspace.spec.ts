@@ -15,7 +15,7 @@ const issue = (number: number, title: string) => ({
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() =>
-    sessionStorage.setItem('kitsune.github.access-token', 'e2e-token'),
+    sessionStorage.setItem('kitsuflow.github.access-token', 'e2e-token'),
   );
   await page.route('https://api.github.com/**', async (route) => {
     const url = new URL(route.request().url());

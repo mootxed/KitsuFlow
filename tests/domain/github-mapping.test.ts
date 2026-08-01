@@ -4,7 +4,11 @@ import {
   derivePriority,
   deriveStatus,
   isPullRequest,
+  labelsForMove,
+  labelsForPriority,
+  labelsForStatus,
   normalizeIssue,
+  visibleLabels,
 } from '../../src/domain/github-mapping';
 import { apiIssue } from '../fixtures';
 
@@ -16,13 +20,17 @@ describe('GitHub Issue mapping', () => {
     });
   });
 
-  it('maps in-progress and postponed labels', () => {
+  it('maps in-progress and postponed labels (kf: and legacy km:)', () => {
     expect(deriveStatus(apiIssue({ labels: [APP_CONFIG.labels.status.inProgress] })).status).toBe(
+      'in_progress',
+    );
+    expect(deriveStatus(apiIssue({ labels: ['km:status:in-progress'] })).status).toBe(
       'in_progress',
     );
     expect(deriveStatus(apiIssue({ labels: [APP_CONFIG.labels.status.postponed] })).status).toBe(
       'postponed',
     );
+    expect(deriveStatus(apiIssue({ labels: ['km:status:postponed'] })).status).toBe('postponed');
   });
 
   it('always maps a closed issue to done', () => {
@@ -31,12 +39,46 @@ describe('GitHub Issue mapping', () => {
     ).toEqual({ status: 'done', conflict: false });
   });
 
-  it('maps priority from system labels', () => {
+  it('maps priority from system labels (kf: and legacy km:)', () => {
     expect(derivePriority([APP_CONFIG.labels.priority.urgent])).toEqual({
       priority: 'urgent',
       conflict: false,
     });
+    expect(derivePriority(['km:priority:high'])).toEqual({
+      priority: 'high',
+      conflict: false,
+    });
     expect(derivePriority([{ name: 'feature' }])).toEqual({ priority: 'none', conflict: false });
+  });
+
+  it('hides both kf: and km: system prefixes in visibleLabels', () => {
+    const labels = [
+      { name: 'bug', color: 'red' },
+      { name: 'kf:status:in-progress', color: 'green' },
+      { name: 'km:priority:high', color: 'orange' },
+      { name: 'feature', color: 'blue' },
+    ];
+    expect(visibleLabels(labels)).toEqual([
+      { name: 'bug', color: 'red' },
+      { name: 'feature', color: 'blue' },
+    ]);
+  });
+
+  it('migrates legacy km: labels to kf: labels on status/priority update', () => {
+    const current = ['km:status:postponed', 'km:priority:low', 'enhancement'];
+    const updatedStatus = labelsForStatus(current, 'in_progress');
+    expect(updatedStatus).toContain('kf:status:in-progress');
+    expect(updatedStatus).not.toContain('km:status:postponed');
+
+    const updatedPriority = labelsForPriority(current, 'high');
+    expect(updatedPriority).toContain('kf:priority:high');
+    expect(updatedPriority).not.toContain('km:priority:low');
+  });
+
+  it('atomically moves status and priority via labelsForMove', () => {
+    const current = ['km:status:todo', 'km:priority:low', 'bug'];
+    const moved = labelsForMove(current, 'in_progress', 'urgent');
+    expect(moved).toEqual(['bug', 'kf:status:in-progress', 'kf:priority:urgent']);
   });
 
   it('detects conflicting system labels without silently resolving them', () => {

@@ -19,7 +19,7 @@ export interface SyncMetadata {
   updatedAt: string;
 }
 
-export class KitsuneDatabase extends Dexie {
+export class KitsuFlowDatabase extends Dexie {
   localNotes!: EntityTable<LocalNote, 'id'>;
   githubIssuesCache!: Table<GitHubIssue, [string, number]>;
   repositoriesCache!: EntityTable<Repository, 'fullName'>;
@@ -29,7 +29,7 @@ export class KitsuneDatabase extends Dexie {
   settings!: EntityTable<SettingRecord, 'key'>;
   syncMetadata!: EntityTable<SyncMetadata, 'key'>;
 
-  constructor(name = 'kitsune-manager') {
+  constructor(name = 'kitsuflow-db') {
     super(name);
     this.version(1).stores({
       localNotes: 'id, status, repositoryFullName, updatedAt, syncState',
@@ -57,7 +57,7 @@ export class KitsuneDatabase extends Dexie {
   }
 }
 
-export const db = new KitsuneDatabase();
+export const db = new KitsuFlowDatabase();
 
 export async function clearLocalData(): Promise<void> {
   await db.transaction('rw', db.tables, async () => {
