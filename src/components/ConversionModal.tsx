@@ -10,15 +10,16 @@ import { useAppStore } from '../state/app-store';
 import { useShallow } from 'zustand/react/shallow';
 
 export function ConversionModal() {
-  const noteId = useAppStore((state) => state.conversionNoteId);
+  const conversionDialog = useAppStore((state) => state.conversionDialog);
+  const noteId = conversionDialog.noteId;
   const note = useAppStore((state) => state.notes.find((item) => item.id === noteId));
-  const targetRepository = useAppStore((state) => state.conversionRepositoryFullName);
   const repositories = useAppStore(
     useShallow((state) => state.repositories.filter((repo) => repo.pinned)),
   );
   const setNoteId = useAppStore((state) => state.setConversionNoteId);
   const confirm = useAppStore((state) => state.confirmConversion);
   const getRepositoryLabels = useAppStore((state) => state.getRepositoryLabels);
+  const getRepositoryAssignees = useAppStore((state) => state.getRepositoryAssignees);
 
   const [repository, setRepository] = useState('');
   const [status, setStatus] = useState<Exclude<TaskStatus, 'question'>>('todo');
@@ -27,24 +28,61 @@ export function ConversionModal() {
     [],
   );
   const [selectedLabels, setSelectedLabels] = useState<string[]>([]);
+  const [availableAssignees, setAvailableAssignees] = useState<string[]>([]);
   const [assignee, setAssignee] = useState('');
-
-  const initialRepository =
-    targetRepository || note?.repositoryFullName || repositories[0]?.fullName || '';
+  const [loadingLabels, setLoadingLabels] = useState(false);
 
   useEffect(() => {
-    if (note) setRepository(initialRepository);
-  }, [note, initialRepository]);
+    if (note) {
+      const initialRepo =
+        conversionDialog.repositoryFullName ||
+        note.repositoryFullName ||
+        repositories[0]?.fullName ||
+        '';
+      setRepository(initialRepo);
+      if (conversionDialog.status && conversionDialog.status !== 'question') {
+        setStatus(conversionDialog.status as Exclude<TaskStatus, 'question'>);
+      } else {
+        setStatus('todo');
+      }
+      if (conversionDialog.priority) {
+        setPriority(conversionDialog.priority);
+      } else {
+        setPriority('none');
+      }
+    }
+  }, [note, conversionDialog, repositories]);
 
   useEffect(() => {
+    let active = true;
     if (repository) {
+      setLoadingLabels(true);
+      setSelectedLabels([]);
+      setAssignee('');
+
       void getRepositoryLabels(repository).then((labels) => {
-        setAvailableLabels(labels);
+        if (active) {
+          setAvailableLabels(labels);
+          setLoadingLabels(false);
+        }
+      });
+
+      void getRepositoryAssignees(repository).then((assignees) => {
+        if (active) {
+          setAvailableAssignees(assignees);
+        }
       });
     } else {
       setAvailableLabels([]);
+      setSelectedLabels([]);
+      setAvailableAssignees([]);
+      setAssignee('');
     }
-  }, [repository, getRepositoryLabels]);
+
+    return () => {
+      active = false;
+    };
+  }, [repository, getRepositoryLabels, getRepositoryAssignees]);
 
   if (!noteId || !note) return null;
 
@@ -102,7 +140,10 @@ export function ConversionModal() {
         <div className="field-grid">
           <label>
             Будущий статус
-            <select value={status} onChange={(event) => setStatus(event.target.value as any)}>
+            <select
+              value={status}
+              onChange={(event) => setStatus(event.target.value as Exclude<TaskStatus, 'question'>)}
+            >
               {(['todo', 'in_progress', 'done', 'postponed'] as const).map((value) => (
                 <option key={value} value={value}>
                   {STATUS_LABELS[value]}
@@ -125,10 +166,14 @@ export function ConversionModal() {
           </label>
         </div>
         <label>
-          GitHub labels
+          GitHub labels {loadingLabels && <small>(загрузка...)</small>}
           <div className="labels-selector">
             {availableLabels.length === 0 ? (
-              <span className="no-labels-hint">Нет доступных меток для выбранного репозитория</span>
+              <span className="no-labels-hint">
+                {loadingLabels
+                  ? 'Загрузка меток...'
+                  : 'Нет доступных меток для выбранного репозитория'}
+              </span>
             ) : (
               availableLabels.map((lbl) => {
                 const isSelected = selectedLabels.includes(lbl.name);
@@ -151,12 +196,15 @@ export function ConversionModal() {
           </div>
         </label>
         <label>
-          Assignee
-          <input
-            value={assignee}
-            onChange={(event) => setAssignee(event.target.value)}
-            placeholder="GitHub login"
-          />
+          Исполнитель (Assignee)
+          <select value={assignee} onChange={(event) => setAssignee(event.target.value)}>
+            <option value="">Без исполнителя</option>
+            {availableAssignees.map((userLogin) => (
+              <option key={userLogin} value={userLogin}>
+                {userLogin}
+              </option>
+            ))}
+          </select>
         </label>
         <p className="hint">
           Совпавшие локальные теги будут использованы как GitHub labels. Остальные останутся в body.

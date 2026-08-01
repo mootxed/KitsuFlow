@@ -48,7 +48,20 @@ describe('GitHub Issue mapping', () => {
       priority: 'high',
       conflict: false,
     });
-    expect(derivePriority([{ name: 'feature' }])).toEqual({ priority: 'none', conflict: false });
+    expect(derivePriority(['km:priority:high', 'kf:priority:high'])).toEqual({
+      priority: 'high',
+      conflict: false,
+    });
+    expect(derivePriority(['km:priority:high', 'kf:priority:urgent'])).toEqual({
+      priority: 'high',
+      conflict: true,
+    });
+    expect(
+      deriveStatus(apiIssue({ labels: ['km:status:in-progress', 'kf:status:in-progress'] })),
+    ).toEqual({
+      status: 'in_progress',
+      conflict: false,
+    });
   });
 
   it('hides both kf: and km: system prefixes in visibleLabels', () => {

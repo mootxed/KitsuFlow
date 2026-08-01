@@ -10,46 +10,82 @@ import { useAppStore } from '../state/app-store';
 import { useShallow } from 'zustand/react/shallow';
 
 export function QuickCreateModal() {
-  const open = useAppStore((state) => state.createOpen);
+  const createDialog = useAppStore((state) => state.createDialog);
   const setOpen = useAppStore((state) => state.setCreateOpen);
   const repositories = useAppStore(
     useShallow((state) => state.repositories.filter((repo) => repo.pinned)),
   );
   const createTask = useAppStore((state) => state.createTask);
   const getRepositoryLabels = useAppStore((state) => state.getRepositoryLabels);
+  const getRepositoryAssignees = useAppStore((state) => state.getRepositoryAssignees);
 
   const titleRef = useRef<HTMLInputElement>(null);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [status, setStatus] = useState<TaskStatus>('todo');
   const [repository, setRepository] = useState('');
-  const [tags, setTags] = useState(''); // Для локальных тегов (свободный ввод)
+  const [tags, setTags] = useState('');
   const [availableLabels, setAvailableLabels] = useState<Array<{ name: string; color: string }>>(
     [],
   );
-  const [selectedLabels, setSelectedLabels] = useState<string[]>([]); // Для GitHub labels
+  const [selectedLabels, setSelectedLabels] = useState<string[]>([]);
+  const [availableAssignees, setAvailableAssignees] = useState<string[]>([]);
+  const [assignee, setAssignee] = useState('');
   const [checklist, setChecklist] = useState('');
   const [priority, setPriority] = useState<IssuePriority>('none');
-  const [assignee, setAssignee] = useState('');
+  const [loadingLabels, setLoadingLabels] = useState(false);
+
+  const open = createDialog.open;
 
   useEffect(() => {
-    if (open) window.setTimeout(() => titleRef.current?.focus(), 0);
-  }, [open]);
+    if (open) {
+      window.setTimeout(() => titleRef.current?.focus(), 0);
+      if (createDialog.initialRepositoryFullName) {
+        setRepository(createDialog.initialRepositoryFullName);
+      }
+      if (createDialog.initialStatus) {
+        setStatus(createDialog.initialStatus);
+      }
+      if (createDialog.initialPriority) {
+        setPriority(createDialog.initialPriority);
+      }
+    }
+  }, [open, createDialog]);
 
   useEffect(() => {
     if (!repository && status === 'question') setStatus('todo');
   }, [repository, status]);
 
   useEffect(() => {
+    let active = true;
     if (repository) {
+      setLoadingLabels(true);
+      setSelectedLabels([]);
+      setAssignee('');
+
       void getRepositoryLabels(repository).then((labels) => {
-        setAvailableLabels(labels);
+        if (active) {
+          setAvailableLabels(labels);
+          setLoadingLabels(false);
+        }
+      });
+
+      void getRepositoryAssignees(repository).then((assignees) => {
+        if (active) {
+          setAvailableAssignees(assignees);
+        }
       });
     } else {
       setAvailableLabels([]);
       setSelectedLabels([]);
+      setAvailableAssignees([]);
+      setAssignee('');
     }
-  }, [repository, getRepositoryLabels]);
+
+    return () => {
+      active = false;
+    };
+  }, [repository, getRepositoryLabels, getRepositoryAssignees]);
 
   if (!open) return null;
 
@@ -161,12 +197,15 @@ export function QuickCreateModal() {
           </label>
         </div>
         <label>
-          {repository ? 'GitHub labels' : 'Локальные теги'}
+          {repository ? 'GitHub labels' : 'Локальные теги'}{' '}
+          {loadingLabels && <small>(загрузка...)</small>}
           {repository ? (
             <div className="labels-selector">
               {availableLabels.length === 0 ? (
                 <span className="no-labels-hint">
-                  Нет доступных меток для выбранного репозитория
+                  {loadingLabels
+                    ? 'Загрузка меток...'
+                    : 'Нет доступных меток для выбранного репозитория'}
                 </span>
               ) : (
                 availableLabels.map((lbl) => {
@@ -222,11 +261,14 @@ export function QuickCreateModal() {
             </label>
             <label>
               Исполнитель
-              <input
-                value={assignee}
-                onChange={(event) => setAssignee(event.target.value)}
-                placeholder="GitHub login"
-              />
+              <select value={assignee} onChange={(event) => setAssignee(event.target.value)}>
+                <option value="">Без исполнителя</option>
+                {availableAssignees.map((userLogin) => (
+                  <option key={userLogin} value={userLogin}>
+                    {userLogin}
+                  </option>
+                ))}
+              </select>
             </label>
           </div>
         )}

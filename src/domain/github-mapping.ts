@@ -47,15 +47,20 @@ export function deriveStatus(issue: Pick<ApiIssue, 'state' | 'labels'>): {
 } {
   if (issue.state === 'closed') return { status: 'done', conflict: false };
   const names = labelNames(issue.labels);
-  // Распознаём оба префикса: kf: (новый) и km: (устаревший)
-  const inProgress =
-    names.includes(APP_CONFIG.labels.status.inProgress) || names.includes('km:status:in-progress');
-  const postponed =
-    names.includes(APP_CONFIG.labels.status.postponed) || names.includes('km:status:postponed');
-  const count = (inProgress ? 1 : 0) + (postponed ? 1 : 0);
+  const statusValues: Array<Exclude<TaskStatus, 'question'>> = [];
+  if (
+    names.includes(APP_CONFIG.labels.status.inProgress) ||
+    names.includes('km:status:in-progress')
+  ) {
+    statusValues.push('in_progress');
+  }
+  if (names.includes(APP_CONFIG.labels.status.postponed) || names.includes('km:status:postponed')) {
+    statusValues.push('postponed');
+  }
+  const uniqueStatuses = Array.from(new Set(statusValues));
   return {
-    status: inProgress ? 'in_progress' : postponed ? 'postponed' : 'todo',
-    conflict: count > 1,
+    status: uniqueStatuses[0] || 'todo',
+    conflict: uniqueStatuses.length > 1,
   };
 }
 
@@ -64,25 +69,25 @@ export function derivePriority(labels: ApiIssue['labels']): {
   conflict: boolean;
 } {
   const names = labelNames(labels);
-  // Текущие kf: приоритеты
-  const kfPriorities = Object.entries(APP_CONFIG.labels.priority).filter(([, name]) =>
-    names.includes(name),
-  );
-  // Устаревшие km: приоритеты — маппинг в ключи IssuePriority
   const legacyMap: Record<string, IssuePriority> = {
     'km:priority:low': 'low',
     'km:priority:medium': 'medium',
     'km:priority:high': 'high',
     'km:priority:urgent': 'urgent',
   };
-  const legacyPriorities = Object.entries(legacyMap).filter(([name]) => names.includes(name));
-  const allPriorities: IssuePriority[] = [
-    ...kfPriorities.map(([key]) => key as IssuePriority),
-    ...legacyPriorities.map(([, val]) => val),
-  ];
+  const foundPriorities: IssuePriority[] = [];
+  for (const name of names) {
+    const kfEntry = Object.entries(APP_CONFIG.labels.priority).find(([, val]) => val === name);
+    if (kfEntry) {
+      foundPriorities.push(kfEntry[0] as IssuePriority);
+    } else if (name in legacyMap) {
+      foundPriorities.push(legacyMap[name]!);
+    }
+  }
+  const uniquePriorities = Array.from(new Set(foundPriorities));
   return {
-    priority: allPriorities[0] || 'none',
-    conflict: allPriorities.length > 1,
+    priority: uniquePriorities[0] || 'none',
+    conflict: uniquePriorities.length > 1,
   };
 }
 

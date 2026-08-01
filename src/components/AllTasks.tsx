@@ -13,16 +13,33 @@ export function AllTasks() {
   );
   const setCreateOpen = useAppStore((state) => state.setCreateOpen);
   const [statuses, setStatuses] = useState<TaskStatus[]>(['todo', 'in_progress']);
-  const local = useMemo(
+
+  const localNotes = useMemo(
     () => notes.filter((note) => !note.repositoryFullName && statuses.includes(note.status)),
     [notes, statuses],
   );
+
+  const pinnedRepoNames = useMemo(
+    () => new Set(repositories.map((repo) => repo.fullName)),
+    [repositories],
+  );
+
+  const pinnedIssues = useMemo(
+    () =>
+      issues.filter(
+        (issue) =>
+          pinnedRepoNames.has(issue.repositoryFullName) && statuses.includes(issue.derivedStatus),
+      ),
+    [issues, pinnedRepoNames, statuses],
+  );
+
   const toggle = (status: TaskStatus) =>
     setStatuses((current) =>
       current.includes(status) ? current.filter((item) => item !== status) : [...current, status],
     );
-  const total =
-    local.length + issues.filter((issue) => statuses.includes(issue.derivedStatus)).length;
+
+  const total = localNotes.length + pinnedIssues.length;
+
   return (
     <div className="screen all-tasks">
       <header className="screen-header">
@@ -57,22 +74,26 @@ export function AllTasks() {
         </div>
       ) : (
         <div className="task-groups">
-          <section className="task-group">
-            <h2>
-              <span className="status-dot status-todo" /> Локальные заметки <b>{local.length}</b>
-            </h2>
-            <div className="task-list">
-              {local.map((note) => (
-                <TaskRow key={note.id} kind="note" item={note} compact />
-              ))}
-            </div>
-          </section>
+          {localNotes.length > 0 && (
+            <section className="task-group">
+              <h2>
+                <span className="status-dot status-todo" /> Локальные заметки{' '}
+                <b>{localNotes.length}</b>
+              </h2>
+              <div className="task-list">
+                {localNotes.map((note) => (
+                  <TaskRow key={note.id} kind="note" item={note} compact />
+                ))}
+              </div>
+            </section>
+          )}
           {repositories.map((repository) => {
-            const repoIssues = issues.filter(
-              (issue) =>
-                issue.repositoryFullName === repository.fullName &&
-                statuses.includes(issue.derivedStatus),
+            const repoIssues = pinnedIssues.filter(
+              (issue) => issue.repositoryFullName === repository.fullName,
             );
+
+            if (repoIssues.length === 0) return null;
+
             return (
               <section className="task-group" key={repository.fullName}>
                 <h2>

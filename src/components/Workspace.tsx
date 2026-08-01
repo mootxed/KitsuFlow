@@ -13,6 +13,14 @@ export function Workspace() {
   const refreshIssues = useAppStore((state) => state.refreshIssues);
   const retryOperation = useAppStore((state) => state.retryOperation);
   const active = tabs.find((tab) => tab.active)?.entity || { kind: 'all' as const };
+
+  const problematicOps = outbox.filter(
+    (operation) =>
+      operation.state === 'failed' ||
+      operation.state === 'attention' ||
+      operation.state === 'exhausted',
+  );
+
   return (
     <section className="workspace">
       <div className="state-strip">
@@ -40,24 +48,42 @@ export function Workspace() {
           <RefreshCw size={13} />
         </button>
       </div>
-      {outbox.some(
-        (operation) => operation.state === 'failed' || operation.state === 'attention',
-      ) && (
-        <details className="sync-queue">
-          <summary>Операции, требующие внимания</summary>
-          {outbox
-            .filter((operation) => operation.state === 'failed' || operation.state === 'attention')
-            .map((operation) => (
-              <div key={operation.id}>
+
+      {problematicOps.length > 0 && (
+        <details className="sync-queue" open>
+          <summary>Операции outbox, требующие внимания ({problematicOps.length})</summary>
+          {problematicOps.map((operation) => {
+            const isFutureAutoRetry =
+              operation.state === 'failed' &&
+              operation.nextAttemptAt &&
+              new Date(operation.nextAttemptAt).getTime() > Date.now();
+
+            return (
+              <div key={operation.id} className={`outbox-op state-${operation.state}`}>
                 <span>
-                  <strong>{operation.repositoryFullName}</strong>
+                  <strong>{operation.repositoryFullName}</strong> ({operation.type})
                   <small>{operation.lastError || 'Синхронизация не завершена'}</small>
+                  {operation.attemptCount > 0 && (
+                    <small> • Попыток: {operation.attemptCount}</small>
+                  )}
+                  {isFutureAutoRetry && (
+                    <small className="auto-retry">
+                      {' '}
+                      • Автоповтор в {new Date(operation.nextAttemptAt!).toLocaleTimeString()}
+                    </small>
+                  )}
                 </span>
-                <button onClick={() => void retryOperation(operation.id)}>Повторить</button>
+                {(!isFutureAutoRetry || operation.state === 'exhausted') && (
+                  <button onClick={() => void retryOperation(operation.id)}>
+                    {operation.state === 'exhausted' ? 'Повторить вручную' : 'Повторить'}
+                  </button>
+                )}
               </div>
-            ))}
+            );
+          })}
         </details>
       )}
+
       {active.kind === 'all' && <AllTasks />}
       {active.kind === 'repository' && (
         <RepositoryBoard repositoryFullName={active.repositoryFullName} />

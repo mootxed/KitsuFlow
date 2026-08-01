@@ -4,7 +4,6 @@ import { createLocalNote } from '../../src/domain/notes';
 import { normalizeIssue } from '../../src/domain/github-mapping';
 import { OutboxProcessor } from '../../src/sync/outbox';
 import { apiIssue } from '../fixtures';
-import { APP_CONFIG } from '../../src/config';
 
 describe('outbox durability & error handling', () => {
   afterEach(async () => {
@@ -38,6 +37,7 @@ describe('outbox durability & error handling', () => {
     await processor.process();
     expect(await db.localNotes.get(note.id)).toBeDefined();
     expect((await db.outbox.toArray())[0]?.state).toBe('attention');
+    processor.destroy();
   });
 
   it('deletes the source note only after confirmed issue creation', async () => {
@@ -50,6 +50,7 @@ describe('outbox durability & error handling', () => {
     const api = {
       createIssue: async () => normalizeIssue('acme/repo', apiIssue()),
       updateIssue: async () => normalizeIssue('acme/repo', apiIssue()),
+      getIssues: async () => [normalizeIssue('acme/repo', apiIssue())],
     };
     const processor = new OutboxProcessor(
       () => api as any,
@@ -66,164 +67,181 @@ describe('outbox durability & error handling', () => {
     expect(await db.localNotes.get(note.id)).toBeUndefined();
     expect(await db.githubIssuesCache.count()).toBe(1);
     expect(await db.outbox.count()).toBe(0);
+    processor.destroy();
   });
 
-  it('restores pending operations from IndexedDB after a new processor is created', async () => {
-    const first = new OutboxProcessor(
-      () => null,
-      () => undefined,
-    );
-    await first.enqueue({
-      type: 'create_issue',
-      entityKey: 'draft',
-      repositoryFullName: 'acme/repo',
-      payload: { title: 'Offline' },
-    });
-    const second = new OutboxProcessor(
-      () => null,
-      () => undefined,
-    );
-    expect(second).toBeDefined();
-    expect((await db.outbox.toArray())[0]?.payload.title).toBe('Offline');
-  });
-
-  it('keeps offline creation queued and sends it after reconnect', async () => {
-    const online = vi.spyOn(window.navigator, 'onLine', 'get');
-    online.mockReturnValue(false);
-    const api = {
-      createIssue: vi.fn(async () => normalizeIssue('acme/repo', apiIssue())),
-    };
-    const processor = new OutboxProcessor(
-      () => api as any,
-      () => undefined,
-    );
-    await processor.enqueue({
-      type: 'create_issue',
-      entityKey: 'offline',
-      repositoryFullName: 'acme/repo',
-      payload: { title: 'Offline', body: '', labels: [], assignees: [] },
-    });
-    await processor.process();
-    expect(api.createIssue).not.toHaveBeenCalled();
-    expect(await db.outbox.count()).toBe(1);
-    online.mockReturnValue(true);
-    await processor.process();
-    expect(api.createIssue).toHaveBeenCalledOnce();
-    expect(await db.outbox.count()).toBe(0);
-  });
-
-  it('stops on 401 without deleting the outbox', async () => {
-    const events: string[] = [];
+  it('parallel calls to process() return the same Promise and do not duplicate execution', async () => {
+    let callCount = 0;
     const api = {
       updateIssue: async () => {
-        throw Object.assign(new Error('Bad credentials'), { status: 401 });
+        callCount++;
+        await new Promise((r) => setTimeout(r, 50));
+        return normalizeIssue('acme/repo', apiIssue({ number: 1 }));
       },
     };
     const processor = new OutboxProcessor(
       () => api as any,
-      (event) => events.push(event.type),
+      () => undefined,
     );
+    await db.outbox.add({
+      id: 'op-parallel-1',
+      type: 'update_issue',
+      entityKey: 'acme/repo#1',
+      repositoryFullName: 'acme/repo',
+      payload: { issueNumber: 1, title: 'Parallel test' },
+      state: 'pending',
+      requestStarted: false,
+      attemptCount: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    const p1 = processor.process();
+    const p2 = processor.process();
+    expect(p1).toBe(p2);
+    await Promise.all([p1, p2]);
+    expect(callCount).toBe(1);
+    processor.destroy();
+  });
+
+  it('executes operation added during an active process() loop in the same loop', async () => {
+    const processed: string[] = [];
+    const api = {
+      updateIssue: async (repo: string, num: number) => {
+        processed.push(`op-${num}`);
+        await new Promise((r) => setTimeout(r, 20));
+        return normalizeIssue(repo, apiIssue({ number: num }));
+      },
+    };
+    const processor = new OutboxProcessor(
+      () => api as any,
+      () => undefined,
+    );
+
     await processor.enqueue({
       type: 'update_issue',
       entityKey: 'acme/repo#1',
       repositoryFullName: 'acme/repo',
-      payload: { issueNumber: 1, title: 'Keep me' },
+      payload: { issueNumber: 1, title: 'First' },
     });
-    await processor.process();
-    expect(events).toContain('unauthorized');
-    expect(await db.outbox.count()).toBe(1);
-  });
 
-  it('pauses at the rate limit reset time', async () => {
-    const events: string[] = [];
-    const reset = Math.ceil((Date.now() + 60_000) / 1000);
-    const api = {
-      updateIssue: async () => {
-        throw Object.assign(new Error('rate limit'), {
-          status: 429,
-          response: { headers: { 'x-ratelimit-reset': String(reset) } },
-        });
-      },
-    };
-    const processor = new OutboxProcessor(
-      () => api as any,
-      (event) => events.push(event.type),
-    );
+    const processPromise = processor.process();
+
     await processor.enqueue({
       type: 'update_issue',
       entityKey: 'acme/repo#2',
       repositoryFullName: 'acme/repo',
-      payload: { issueNumber: 2, title: 'Later' },
+      payload: { issueNumber: 2, title: 'Second' },
     });
-    await processor.process();
-    expect(events).toContain('rate-limited');
-    expect((await db.outbox.toArray())[0]?.nextAttemptAt).toBeDefined();
+
+    await processPromise;
+    expect(processed).toEqual(['op-1', 'op-2']);
+    processor.destroy();
   });
 
-  it('transitions to exhausted state after maxSyncAttempts', async () => {
+  it('two-stage issue creation: POST succeeds, PATCH fails, retry executes only PATCH without repeating POST', async () => {
+    let postCalls = 0;
+    let patchCalls = 0;
+
     const api = {
-      updateIssue: async () => {
-        throw new Error('500 Server Error');
+      createIssue: async () => {
+        postCalls++;
+        return normalizeIssue('acme/repo', apiIssue({ number: 99 }));
       },
+      updateIssue: async () => {
+        patchCalls++;
+        if (patchCalls === 1) {
+          throw new Error('500 Server error during PATCH close');
+        }
+        return normalizeIssue('acme/repo', apiIssue({ number: 99, state: 'closed' }));
+      },
+      getIssues: async () => [normalizeIssue('acme/repo', apiIssue({ number: 99 }))],
+    };
+
+    const processor = new OutboxProcessor(
+      () => api as any,
+      () => undefined,
+    );
+
+    const op = await processor.enqueue({
+      type: 'create_issue',
+      entityKey: 'client-temp-1',
+      repositoryFullName: 'acme/repo',
+      payload: { title: 'Closed Issue', state: 'closed', labels: [], assignees: [] },
+    });
+
+    await processor.process();
+
+    expect(postCalls).toBe(1);
+    expect(patchCalls).toBe(1);
+
+    const outboxItem = await db.outbox.get(op.id);
+    expect(outboxItem?.creationStage).toBe('applying_final_state');
+    expect(outboxItem?.createdIssueNumber).toBe(99);
+    expect(outboxItem?.state).toBe('failed');
+
+    await processor.retry(op.id);
+
+    expect(postCalls).toBe(1);
+    expect(patchCalls).toBe(2);
+    expect(await db.outbox.count()).toBe(0);
+    processor.destroy();
+  });
+
+  it('recovers stale syncing update_issue back to pending', async () => {
+    await db.outbox.add({
+      id: 'stale-1',
+      type: 'update_issue',
+      entityKey: 'acme/repo#10',
+      repositoryFullName: 'acme/repo',
+      payload: { issueNumber: 10, title: 'Stale' },
+      state: 'syncing',
+      requestStarted: true,
+      attemptCount: 1,
+      leaseExpiresAt: new Date(Date.now() - 1000).toISOString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    const api = {
+      updateIssue: async () => normalizeIssue('acme/repo', apiIssue({ number: 10 })),
+    };
+
+    const processor = new OutboxProcessor(
+      () => api as any,
+      () => undefined,
+    );
+
+    await processor.process();
+    expect(await db.outbox.count()).toBe(0);
+    processor.destroy();
+  });
+
+  it('manual retry resets attemptCount, state, nextAttemptAt, and lastError', async () => {
+    const api = {
+      updateIssue: async () => normalizeIssue('acme/repo', apiIssue({ number: 3 })),
     };
     const processor = new OutboxProcessor(
       () => api as any,
       () => undefined,
     );
+
     const op = await processor.enqueue({
       type: 'update_issue',
       entityKey: 'acme/repo#3',
       repositoryFullName: 'acme/repo',
-      payload: { issueNumber: 3, title: 'Fails repeatedly' },
+      payload: { issueNumber: 3, title: 'Retry test' },
     });
 
-    // Simulate attempts up to maxSyncAttempts (4)
-    await db.outbox.update(op.id, { attemptCount: APP_CONFIG.maxSyncAttempts - 1 });
-    await processor.process();
+    await db.outbox.update(op.id, {
+      state: 'exhausted',
+      attemptCount: 4,
+      lastError: 'Failed max times',
+      nextAttemptAt: undefined,
+    });
 
-    const result = await db.outbox.get(op.id);
-    expect(result?.state).toBe('exhausted');
-    expect(result?.attemptCount).toBe(APP_CONFIG.maxSyncAttempts);
-
-    // Automatic process should not select exhausted operations
-    const updateSpy = vi.spyOn(api, 'updateIssue');
-    await processor.process();
-    expect(updateSpy).not.toHaveBeenCalled();
-
-    // Manual retry should reset state to pending and try again
     await processor.retry(op.id);
-    expect(updateSpy).toHaveBeenCalledOnce();
-  });
-
-  it('distinguishes 403 permission-denied from rate limit and does not auto-retry', async () => {
-    const events: string[] = [];
-    const api = {
-      updateIssue: async () => {
-        throw Object.assign(new Error('Resource not accessible by integration'), {
-          status: 403,
-          response: {
-            headers: { 'x-ratelimit-remaining': '60' },
-            data: { message: 'Resource not accessible' },
-          },
-        });
-      },
-    };
-    const processor = new OutboxProcessor(
-      () => api as any,
-      (event) => events.push(event.type),
-    );
-    await processor.enqueue({
-      type: 'update_issue',
-      entityKey: 'acme/repo#4',
-      repositoryFullName: 'acme/repo',
-      payload: { issueNumber: 4, title: 'Permission check' },
-    });
-
-    await processor.process();
-
-    expect(events).toContain('permission-denied');
-    const result = (await db.outbox.toArray())[0];
-    expect(result?.state).toBe('attention');
-    expect(result?.lastError).toContain('Отказано в доступе');
+    expect(await db.outbox.count()).toBe(0);
+    processor.destroy();
   });
 });

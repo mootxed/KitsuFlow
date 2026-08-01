@@ -2,7 +2,7 @@ import { DndContext, type DragEndEvent, PointerSensor, useSensor, useSensors } f
 import { useEffect } from 'react';
 import { useRegisterSW } from 'virtual:pwa-register/react';
 import { useAppStore } from './state/app-store';
-import type { GitHubIssue, LocalNote } from './domain/types';
+import type { GitHubIssue, IssuePriority, LocalNote, TaskStatus } from './domain/types';
 import { Sidebar } from './components/Sidebar';
 import { TabBar } from './components/TabBar';
 import { Workspace } from './components/Workspace';
@@ -23,10 +23,11 @@ export function App() {
   const initialize = useAppStore((state) => state.initialize);
   const initialized = useAppStore((state) => state.initialized);
   const setCreateOpen = useAppStore((state) => state.setCreateOpen);
-  const createOpen = useAppStore((state) => state.createOpen);
+  const createDialog = useAppStore((state) => state.createDialog);
   const repositoryPickerOpen = useAppStore((state) => state.repositoryPickerOpen);
-  const conversionNoteId = useAppStore((state) => state.conversionNoteId);
+  const conversionDialog = useAppStore((state) => state.conversionDialog);
   const auth = useAppStore((state) => state.auth);
+  const tabs = useAppStore((state) => state.tabs);
   const setRepositoryPickerOpen = useAppStore((state) => state.setRepositoryPickerOpen);
   const setConversionNoteId = useAppStore((state) => state.setConversionNoteId);
   const logout = useAppStore((state) => state.logout);
@@ -34,6 +35,7 @@ export function App() {
   const changeIssueStatus = useAppStore((state) => state.changeIssueStatus);
   const moveIssue = useAppStore((state) => state.moveIssue);
   const moveIssueToQuestion = useAppStore((state) => state.moveIssueToQuestion);
+
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const {
     needRefresh: [needRefresh],
@@ -53,12 +55,15 @@ export function App() {
         !isTypingTarget(event.target)
       ) {
         event.preventDefault();
-        setCreateOpen(true);
+        const activeTab = tabs.find((t) => t.active);
+        const repoFullName =
+          activeTab?.entity.kind === 'repository' ? activeTab.entity.repositoryFullName : undefined;
+        setCreateOpen(true, { initialRepositoryFullName: repoFullName });
       }
       if (event.key === 'Escape') {
-        if (createOpen) setCreateOpen(false);
+        if (createDialog.open) setCreateOpen(false);
         else if (repositoryPickerOpen) setRepositoryPickerOpen(false);
-        else if (conversionNoteId) setConversionNoteId(null);
+        else if (conversionDialog.noteId) setConversionNoteId(null);
         else if (auth.phase !== 'idle') logout();
       }
     };
@@ -66,13 +71,14 @@ export function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [
     auth.phase,
-    conversionNoteId,
-    createOpen,
+    conversionDialog.noteId,
+    createDialog.open,
     logout,
     repositoryPickerOpen,
     setConversionNoteId,
     setCreateOpen,
     setRepositoryPickerOpen,
+    tabs,
   ]);
 
   const handleDragEnd = (event: DragEndEvent) => {
@@ -85,28 +91,47 @@ export function App() {
       | { type: 'repository'; repositoryFullName: string }
       | { type: 'status'; status: string; repositoryFullName: string }
       | { type: 'priority'; priority: string; status: string; repositoryFullName: string };
+
     if (!source || !target) return;
+
     if (source.type === 'note') {
       const note = source.item as LocalNote;
-      if (target.type === 'repository') requestConversion(note.id, target.repositoryFullName);
-      else if (target.type === 'status' || target.type === 'priority') {
-        requestConversion(note.id, target.repositoryFullName);
+      if (target.type === 'repository') {
+        requestConversion(note.id, {
+          repositoryFullName: target.repositoryFullName,
+          status: 'todo',
+          priority: 'none',
+        });
+      } else if (target.type === 'status') {
+        requestConversion(note.id, {
+          repositoryFullName: target.repositoryFullName,
+          status: target.status as TaskStatus,
+          priority: 'none',
+        });
+      } else if (target.type === 'priority') {
+        requestConversion(note.id, {
+          repositoryFullName: target.repositoryFullName,
+          status: target.status as TaskStatus,
+          priority: target.priority as IssuePriority,
+        });
       }
       return;
     }
+
     const issue = source.item as GitHubIssue;
     if (target.type === 'status') {
       if (target.status === 'question') {
         if (window.confirm('Закрыть GitHub Issue и создать локальную копию в "Под вопросом"?')) {
           void moveIssueToQuestion(issue);
         }
-      } else void changeIssueStatus(issue, target.status as any);
+      } else {
+        void changeIssueStatus(issue, target.status as Exclude<TaskStatus, 'question'>);
+      }
     }
     if (target.type === 'priority') {
-      // Атомарный перенос: один вызов, одна outbox-операция
       void moveIssue(issue, {
-        status: target.status as Exclude<import('./domain/types').TaskStatus, 'question'>,
-        priority: target.priority as import('./domain/types').IssuePriority,
+        status: target.status as Exclude<TaskStatus, 'question'>,
+        priority: target.priority as IssuePriority,
       });
     }
   };

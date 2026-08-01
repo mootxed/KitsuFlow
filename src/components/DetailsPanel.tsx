@@ -143,7 +143,13 @@ export function DetailsContent({
           <button className="primary" onClick={save}>
             <Save size={14} /> Сохранить
           </button>
-          <button onClick={() => requestConversion(note.id, note.repositoryFullName || undefined)}>
+          <button
+            onClick={() =>
+              requestConversion(note.id, {
+                repositoryFullName: note.repositoryFullName || undefined,
+              })
+            }
+          >
             <GitPullRequestArrow size={14} /> Превратить в Issue
           </button>
           <button

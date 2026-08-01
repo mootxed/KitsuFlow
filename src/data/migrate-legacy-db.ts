@@ -1,26 +1,26 @@
 /**
  * migrate-legacy-db.ts
  *
- * Одноразовая миграция данных из устаревшей IndexedDB `kitsune-manager`
+ * Одноразовая атомарная миграция данных из устаревшей IndexedDB `kitsune-manager`
  * в новую `kitsuflow-db`.
- *
- * Гарантии:
- * - Выполняется ДО открытия новой базы Dexie.
- * - Если новая база уже содержит данные — миграция пропускается (не перезаписывает молча).
- * - После успешной миграции сохраняется маркер `kf_migrated` в новой базе.
- * - При любой ошибке: старая база не трогается, выбрасывается исключение
- *   и приложение показывает сообщение об ошибке (не запускается с пустой базой).
- * - Старая база сохраняется как резервная копия.
  */
 
-import { db, KitsuFlowDatabase } from './db';
+import { db } from './db';
 
 const LEGACY_DB_NAME = 'kitsune-manager';
-const MIGRATION_MARKER_STORE = 'syncMetadata';
 const MIGRATION_MARKER_KEY = 'kf_migrated';
 
-/** Таблицы, которые нужно скопировать. */
-const TABLES = [
+type TableName =
+  | 'localNotes'
+  | 'githubIssuesCache'
+  | 'repositoriesCache'
+  | 'repositoryLabelsCache'
+  | 'outbox'
+  | 'tabs'
+  | 'settings'
+  | 'syncMetadata';
+
+const TABLES: readonly TableName[] = [
   'localNotes',
   'githubIssuesCache',
   'repositoriesCache',
@@ -29,9 +29,8 @@ const TABLES = [
   'tabs',
   'settings',
   'syncMetadata',
-] as const;
+];
 
-/** Открывает существующую базу без изменения схемы (версия 0 = текущая). */
 function openExisting(name: string): Promise<IDBDatabase | null> {
   return new Promise((resolve) => {
     const req = indexedDB.open(name);
@@ -46,11 +45,7 @@ function openExisting(name: string): Promise<IDBDatabase | null> {
   });
 }
 
-/** Читает все записи из store как Map<key, value>. */
-function readAllFromStore(
-  idb: IDBDatabase,
-  storeName: string,
-): Promise<Array<{ key: IDBValidKey; value: unknown }>> {
+function readAllFromStore(idb: IDBDatabase, storeName: string): Promise<unknown[]> {
   return new Promise((resolve, reject) => {
     if (!idb.objectStoreNames.contains(storeName)) {
       resolve([]);
@@ -58,12 +53,12 @@ function readAllFromStore(
     }
     const tx = idb.transaction(storeName, 'readonly');
     const store = tx.objectStore(storeName);
-    const results: Array<{ key: IDBValidKey; value: unknown }> = [];
+    const results: unknown[] = [];
     const cursorReq = store.openCursor();
     cursorReq.onsuccess = (event) => {
       const cursor = (event.target as IDBRequest<IDBCursorWithValue | null>).result;
       if (cursor) {
-        results.push({ key: cursor.key, value: cursor.value });
+        results.push(cursor.value);
         cursor.continue();
       } else {
         resolve(results);
@@ -73,59 +68,68 @@ function readAllFromStore(
   });
 }
 
-/**
- * Главная функция миграции.
- *
- * Возвращает:
- * - `'migrated'` — данные успешно скопированы
- * - `'skipped'` — старой базы нет или новая уже содержит данные
- * - `'already-done'` — маркер уже стоит
- */
-export async function migrateLegacyDb(): Promise<'migrated' | 'skipped' | 'already-done'> {
-  // 1. Проверяем наличие старой базы
+export type MigrationResult = 'migrated' | 'skipped' | 'already-done' | 'target-not-empty';
+
+export async function migrateLegacyDb(): Promise<MigrationResult> {
   const legacyDb = await openExisting(LEGACY_DB_NAME);
   if (!legacyDb) {
     return 'skipped';
   }
 
   try {
-    // 2. Открываем новую базу через Dexie (чтобы использовать корректную схему Dexie)
+    // 1. Прочитать ВСЕ данные из старой базы в память (без изменения новой)
+    const legacyDataMap = new Map<TableName, unknown[]>();
+    for (const tableName of TABLES) {
+      const records = await readAllFromStore(legacyDb, tableName);
+      if (records.length > 0) {
+        legacyDataMap.set(tableName, records);
+      }
+    }
+
+    // 2. Открыть новую базу
     await db.open();
 
-    // 3. Проверяем маркер — если уже мигрировали, пропускаем
+    // 3. Проверить маркер успешной миграции
     const marker = await db.syncMetadata.get(MIGRATION_MARKER_KEY);
     if (marker) {
       return 'already-done';
     }
 
-    // 4. Проверяем, есть ли уже данные в новой базе
-    const existingNotesCount = await db.localNotes.count();
-    const existingOutboxCount = await db.outbox.count();
-    if (existingNotesCount > 0 || existingOutboxCount > 0) {
+    // 4. Проверить ВСЕ пользовательские таблицы новой базы на наличие данных
+    const counts = await Promise.all([
+      db.localNotes.count(),
+      db.githubIssuesCache.count(),
+      db.repositoriesCache.count(),
+      db.repositoryLabelsCache.count(),
+      db.outbox.count(),
+      db.tabs.count(),
+      db.settings.count(),
+      db.syncMetadata.count(),
+    ]);
+
+    const totalExisting = counts.reduce((acc, count) => acc + count, 0);
+    if (totalExisting > 0) {
+      console.warn(
+        '[Migration] Новая база уже содержит данные. Миграция пропущена во избежание перезаписи.',
+      );
+      return 'target-not-empty';
+    }
+
+    // 5. Записать все данные в ОДНОЙ Dexie-транзакции
+    await db.transaction('rw', db.tables, async () => {
+      for (const [tableName, records] of legacyDataMap.entries()) {
+        const table = (db as Record<string, any>)[tableName];
+        if (table && typeof table.bulkPut === 'function') {
+          await table.bulkPut(records);
+        }
+      }
+
+      // Маркер записывается внутри той же транзакции и только при её успешном прохождении
       await db.syncMetadata.put({
         key: MIGRATION_MARKER_KEY,
         value: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });
-      return 'already-done';
-    }
-
-    // 5. Переносим данные из legacyDb в Dexie
-    for (const tableName of TABLES) {
-      const records = await readAllFromStore(legacyDb, tableName);
-      if (records.length > 0) {
-        const table = (db as any)[tableName];
-        if (table) {
-          await table.bulkPut(records.map((r) => r.value));
-        }
-      }
-    }
-
-    // 6. Записываем маркер успешной миграции
-    await db.syncMetadata.put({
-      key: MIGRATION_MARKER_KEY,
-      value: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
     });
 
     return 'migrated';

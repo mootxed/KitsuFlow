@@ -1,11 +1,6 @@
 import { create } from 'zustand';
 import { db } from '../data/db';
-import {
-  labelsForMove,
-  labelsForPriority,
-  labelsForStatus,
-  visibleLabels,
-} from '../domain/github-mapping';
+import { labelsForMove, visibleLabels } from '../domain/github-mapping';
 import {
   createLocalNote,
   extractChecklistFromMarkdown,
@@ -43,6 +38,20 @@ interface CreateTaskInput {
   assignees: string[];
 }
 
+export interface CreateDialogState {
+  open: boolean;
+  initialRepositoryFullName?: string | undefined;
+  initialStatus?: TaskStatus | undefined;
+  initialPriority?: IssuePriority | undefined;
+}
+
+export interface ConversionDialogState {
+  noteId: string | null;
+  repositoryFullName?: string | undefined;
+  status?: TaskStatus | undefined;
+  priority?: IssuePriority | undefined;
+}
+
 interface AppState {
   initialized: boolean;
   loading: boolean;
@@ -55,14 +64,14 @@ interface AppState {
   tabs: WorkspaceTab[];
   outbox: OutboxOperation[];
   selectedTask: SelectedTask;
-  createOpen: boolean;
+  createDialog: CreateDialogState;
   repositoryPickerOpen: boolean;
-  conversionNoteId: string | null;
-  conversionRepositoryFullName: string | null;
+  conversionDialog: ConversionDialogState;
   online: boolean;
   stale: boolean;
   error: string | null;
   rateLimitUntil: string | null;
+
   initialize: () => Promise<void>;
   login: () => Promise<void>;
   logout: () => void;
@@ -72,23 +81,38 @@ interface AppState {
   createTask: (input: CreateTaskInput) => Promise<void>;
   updateNote: (id: string, changes: Partial<LocalNote>) => Promise<void>;
   deleteNote: (id: string) => Promise<void>;
+
+  updateIssuePlacement: (
+    issueKeyString: string,
+    changes: {
+      status?: Exclude<TaskStatus, 'question'>;
+      priority?: IssuePriority;
+    },
+  ) => Promise<void>;
+
   changeIssueStatus: (issue: GitHubIssue, status: Exclude<TaskStatus, 'question'>) => Promise<void>;
   changeIssuePriority: (issue: GitHubIssue, priority: IssuePriority) => Promise<void>;
-  /**
-   * Атомарно переносит Issue в другую комбинацию статус+приоритет.
-   * Вычисляет итоговые labels один раз, выполняет одно оптимистичное обновление
-   * и одну outbox-операцию.
-   */
   moveIssue: (
     issue: GitHubIssue,
     target: { status: Exclude<TaskStatus, 'question'>; priority: IssuePriority },
   ) => Promise<void>;
+
   updateIssueFields: (
     issue: GitHubIssue,
     changes: { title: string; body: string },
   ) => Promise<void>;
   moveIssueToQuestion: (issue: GitHubIssue) => Promise<void>;
-  requestConversion: (noteId: string, repositoryFullName?: string) => void;
+
+  requestConversion: (
+    noteId: string,
+    context?:
+      | {
+          repositoryFullName?: string | undefined;
+          status?: TaskStatus | undefined;
+          priority?: IssuePriority | undefined;
+        }
+      | undefined,
+  ) => void;
   confirmConversion: (draft: {
     repositoryFullName: string;
     status: Exclude<TaskStatus, 'question'>;
@@ -96,20 +120,32 @@ interface AppState {
     labels: string[];
     assignees: string[];
   }) => Promise<void>;
+
   openEntity: (
     entity: TabEntity,
-    options?: { duplicate?: boolean; newTab?: boolean },
+    options?: { duplicate?: boolean | undefined; newTab?: boolean | undefined } | undefined,
   ) => Promise<void>;
   closeTab: (id: string) => Promise<void>;
   selectTab: (id: string) => Promise<void>;
   setSelectedTask: (task: SelectedTask) => void;
-  setCreateOpen: (open: boolean) => void;
+
+  setCreateOpen: (
+    open: boolean,
+    context?:
+      | {
+          initialRepositoryFullName?: string | undefined;
+          initialStatus?: TaskStatus | undefined;
+          initialPriority?: IssuePriority | undefined;
+        }
+      | undefined,
+  ) => void;
   setRepositoryPickerOpen: (open: boolean) => void;
   setConversionNoteId: (id: string | null) => void;
   retryOperation: (id: string) => Promise<void>;
   getRepositoryLabels: (
     repositoryFullName: string,
   ) => Promise<Array<{ name: string; color: string }>>;
+  getRepositoryAssignees: (repositoryFullName: string) => Promise<string[]>;
 }
 
 const PENDING_STATES = new Set(['pending', 'syncing', 'failed', 'attention', 'exhausted']);
@@ -130,7 +166,7 @@ const titleForEntity = (entity: TabEntity): string => {
 
 const entitySignature = (entity: TabEntity): string => JSON.stringify(entity);
 
-async function loadCachedState() {
+async function loadCachedState(accountId: string | null) {
   const [repositories, notes, issues, tabs, outbox] = await Promise.all([
     db.repositoriesCache.toArray(),
     db.localNotes.orderBy('updatedAt').reverse().toArray(),
@@ -138,17 +174,61 @@ async function loadCachedState() {
     db.tabs.orderBy('position').toArray(),
     db.outbox.orderBy('createdAt').toArray(),
   ]);
-  return { repositories, notes, issues, tabs, outbox };
+
+  const userRepos = repositories.filter(
+    (repo) => !accountId || !repo.accountId || repo.accountId === accountId,
+  );
+
+  const userIssues = issues.filter(
+    (issue) => !accountId || !issue.accountId || issue.accountId === accountId,
+  );
+
+  const userTabs = tabs.filter(
+    (tab) => !accountId || !tab.accountId || tab.accountId === accountId,
+  );
+
+  const userOutbox = outbox.filter(
+    (op) => !accountId || !op.accountId || op.accountId === accountId,
+  );
+
+  const userNotes = notes.filter(
+    (note) =>
+      !accountId || note.accountId === null || note.accountId === accountId || !note.accountId,
+  );
+
+  return {
+    repositories: userRepos,
+    notes: userNotes,
+    issues: userIssues,
+    tabs: userTabs,
+    outbox: userOutbox,
+  };
 }
 
-async function persistTabs(tabs: WorkspaceTab[]): Promise<void> {
+async function persistTabs(tabs: WorkspaceTab[], accountId?: string | null): Promise<void> {
+  const currentAccountId = accountId || undefined;
+  const tabsWithAccount = tabs.map((t) => ({ ...t, accountId: currentAccountId }));
   await db.transaction('rw', db.tabs, async () => {
-    await db.tabs.clear();
-    await db.tabs.bulkPut(tabs);
+    if (currentAccountId) {
+      await db.tabs.where('accountId').equals(currentAccountId).delete();
+    } else {
+      await db.tabs.clear();
+    }
+    await db.tabs.bulkPut(tabsWithAccount);
   });
 }
 
 export const useAppStore = create<AppState>((set, get) => {
+  const handleIssueCreated = async (tempId: string | number, realIssue: GitHubIssue) => {
+    const { selectedTask } = get();
+    if (selectedTask?.kind === 'issue' && selectedTask.key.includes(String(tempId))) {
+      set({ selectedTask: { kind: 'issue', key: issueKey(realIssue) } });
+    }
+    const currentAccountId = get().user ? String(get().user?.id) : null;
+    const cached = await loadCachedState(currentAccountId);
+    set({ tabs: cached.tabs, issues: cached.issues, outbox: cached.outbox });
+  };
+
   const handleSyncEvent = async (event: SyncEvent) => {
     if (event.type === 'unauthorized') {
       session.clear();
@@ -162,10 +242,12 @@ export const useAppStore = create<AppState>((set, get) => {
     if (event.type === 'permission-denied') {
       set({ error: `Нет доступа: ${event.message}` });
     }
-    const cached = await loadCachedState();
+    const currentAccountId = get().user ? String(get().user?.id) : null;
+    const cached = await loadCachedState(currentAccountId);
     set(cached);
   };
-  outboxProcessor = new OutboxProcessor(() => get().api, handleSyncEvent);
+
+  outboxProcessor = new OutboxProcessor(() => get().api, handleSyncEvent, handleIssueCreated);
 
   return {
     initialized: false,
@@ -179,17 +261,18 @@ export const useAppStore = create<AppState>((set, get) => {
     tabs: [],
     outbox: [],
     selectedTask: null,
-    createOpen: false,
+    createDialog: { open: false },
     repositoryPickerOpen: false,
-    conversionNoteId: null,
-    conversionRepositoryFullName: null,
+    conversionDialog: { noteId: null },
     online: navigator.onLine,
     stale: !navigator.onLine,
     error: null,
     rateLimitUntil: null,
 
     initialize: async () => {
-      const cached = await loadCachedState();
+      const currentUser = get().user;
+      const currentAccountId = currentUser ? String(currentUser.id) : null;
+      const cached = await loadCachedState(currentAccountId);
       let tabs = cached.tabs;
       if (!tabs.length) {
         tabs = [
@@ -199,19 +282,23 @@ export const useAppStore = create<AppState>((set, get) => {
             title: 'Все задачи',
             position: 0,
             active: true,
+            accountId: currentAccountId || undefined,
           },
         ];
-        await persistTabs(tabs);
+        await persistTabs(tabs, currentAccountId);
       }
       set({ ...cached, tabs, loading: false, initialized: true });
+
       const token = session.getToken();
       if (token) {
         const api = new GitHubApi(token);
         try {
           const user = await api.getCurrentUser();
-          set({ api, user, error: null });
+          const accountId = String(user.id);
+          const userCached = await loadCachedState(accountId);
+          set({ api, user, error: null, ...userCached });
+
           await get().refreshRepositories();
-          // Сначала outbox, потом refresh — избегаем гонки
           await outboxProcessor.process();
           await get().refreshIssues();
         } catch {
@@ -223,9 +310,9 @@ export const useAppStore = create<AppState>((set, get) => {
           });
         }
       }
+
       window.addEventListener('online', () => {
         set({ online: true });
-        // Последовательно: сначала outbox, затем refresh
         void outboxProcessor.process().then(() => get().refreshIssues());
       });
       window.addEventListener('offline', () => set({ online: false, stale: true }));
@@ -240,7 +327,10 @@ export const useAppStore = create<AppState>((set, get) => {
       try {
         const user = await api.getCurrentUser();
         session.setToken(token);
-        set({ api, user, auth: { phase: 'idle' }, error: null });
+        const accountId = String(user.id);
+        const userCached = await loadCachedState(accountId);
+
+        set({ api, user, auth: { phase: 'idle' }, error: null, ...userCached });
         await get().refreshRepositories();
         await outboxProcessor.process();
         await get().refreshIssues();
@@ -257,24 +347,45 @@ export const useAppStore = create<AppState>((set, get) => {
     logout: () => {
       deviceFlow.cancel();
       session.clear();
-      set({ api: null, user: null, auth: { phase: 'idle' }, selectedTask: null });
+      outboxProcessor.destroy();
+      set({
+        api: null,
+        user: null,
+        auth: { phase: 'idle' },
+        selectedTask: null,
+        issues: [],
+        repositories: [],
+        tabs: [
+          {
+            id: crypto.randomUUID(),
+            entity: { kind: 'all' },
+            title: 'Все задачи',
+            position: 0,
+            active: true,
+          },
+        ],
+      });
     },
 
     refreshRepositories: async () => {
       const api = get().api;
+      const user = get().user;
       if (!api || !navigator.onLine) return;
+      const accountId = user ? String(user.id) : undefined;
       try {
-        const current = new Map(get().repositories.map((repo) => [repo.fullName, repo]));
+        const currentMap = new Map(get().repositories.map((repo) => [repo.fullName, repo]));
         const repositories = (await api.getRepositories()).map((repo) => ({
           ...repo,
-          pinned: current.get(repo.fullName)?.pinned || false,
+          pinned: currentMap.get(repo.fullName)?.pinned || false,
+          accountId,
         }));
         await db.repositoriesCache.bulkPut(repositories);
         set({ repositories, error: null });
       } catch (error: any) {
+        const status = error?.status;
         set({
           error:
-            error?.status === 403
+            status === 403
               ? 'Нет доступа к установкам GitHub App.'
               : 'Не удалось загрузить репозитории.',
         });
@@ -283,63 +394,95 @@ export const useAppStore = create<AppState>((set, get) => {
 
     refreshIssues: async (repositoryFullName) => {
       const api = get().api;
+      const user = get().user;
       if (!api || !navigator.onLine) return;
+      const accountId = user ? String(user.id) : undefined;
+
       const repositories = repositoryFullName
         ? get().repositories.filter((repo) => repo.fullName === repositoryFullName)
         : get().repositories.filter((repo) => repo.pinned);
+
       try {
         for (const repository of repositories) {
           const [networkIssues, labels] = await Promise.all([
             api.getIssues(repository.fullName),
             api.getLabels(repository.fullName),
           ]);
+
+          const networkIssuesWithAccount = networkIssues.map((i) => ({ ...i, accountId }));
+
           await db.transaction(
             'rw',
             db.githubIssuesCache,
             db.repositoryLabelsCache,
             db.outbox,
             async () => {
-              // Получаем entityKey для операций в outbox этого репозитория
-              const pendingOutboxKeys = new Set(
-                (
-                  await db.outbox
-                    .where('repositoryFullName')
-                    .equals(repository.fullName)
-                    .and((op) => PENDING_STATES.has(op.state))
-                    .toArray()
-                ).map((op) => op.entityKey),
-              );
+              const pendingOutbox = await db.outbox
+                .where('repositoryFullName')
+                .equals(repository.fullName)
+                .and((op) => PENDING_STATES.has(op.state))
+                .toArray();
 
-              // Получаем текущие pending/syncing/failed/attention/exhausted Issues
+              const pendingOutboxKeys = new Set(pendingOutbox.map((op) => op.entityKey));
+
               const localPendingIssues = await db.githubIssuesCache
                 .where('repositoryFullName')
                 .equals(repository.fullName)
                 .and((issue) => PENDING_STATES.has(issue.syncState))
                 .toArray();
 
-              // Удаляем только подтверждённые (synced/conflict) Issues этого репозитория
-              const networkIssueKeys = new Set(
-                networkIssues.map((i) => `${i.repositoryFullName}#${i.issueNumber}`),
+              const localIssueMap = new Map(
+                (
+                  await db.githubIssuesCache
+                    .where('repositoryFullName')
+                    .equals(repository.fullName)
+                    .toArray()
+                ).map((i) => [issueKey(i), i]),
               );
+
+              // Удалить только не-pending записи
               await db.githubIssuesCache
                 .where('repositoryFullName')
                 .equals(repository.fullName)
                 .and((issue) => !PENDING_STATES.has(issue.syncState))
                 .delete();
 
-              // Записываем сетевые Issues
-              await db.githubIssuesCache.bulkPut(networkIssues);
+              // Записать сетевые гибридно с учётом оптимистичных локальных оверлеев
+              for (const netIssue of networkIssuesWithAccount) {
+                const key = issueKey(netIssue);
+                const local = localIssueMap.get(key);
+                const activeOp = pendingOutbox.find(
+                  (op) => op.entityKey === key && op.type === 'update_issue',
+                );
 
-              // Восстанавливаем pending-карточки, которых нет в сетевом ответе
-              // (они ещё не подтверждены GitHub или имеют временный номер)
+                if (local && activeOp) {
+                  const hasConflict =
+                    local.title !== netIssue.title || local.body !== netIssue.body;
+
+                  await db.githubIssuesCache.put({
+                    ...netIssue,
+                    title: local.title,
+                    body: local.body,
+                    labels: local.labels,
+                    state: local.state,
+                    derivedStatus: local.derivedStatus,
+                    derivedPriority: local.derivedPriority,
+                    syncState: hasConflict ? 'conflict' : 'pending',
+                  });
+                } else {
+                  await db.githubIssuesCache.put(netIssue);
+                }
+              }
+
+              // Восстановить pending и временные карточки
               for (const localIssue of localPendingIssues) {
-                const key = `${localIssue.repositoryFullName}#${localIssue.issueNumber}`;
+                const key = issueKey(localIssue);
                 const isTemporary = localIssue.issueNumber < 0;
-                const confirmedByNetwork = networkIssueKeys.has(key);
                 const hasOutboxEntry = localIssue.clientLocalId
                   ? pendingOutboxKeys.has(localIssue.clientLocalId)
                   : pendingOutboxKeys.has(key);
-                if (isTemporary || (!confirmedByNetwork && hasOutboxEntry)) {
+
+                if (isTemporary || hasOutboxEntry) {
                   await db.githubIssuesCache.put(localIssue);
                 }
               }
@@ -348,19 +491,35 @@ export const useAppStore = create<AppState>((set, get) => {
                 repositoryFullName: repository.fullName,
                 labels,
                 cachedAt: new Date().toISOString(),
+                accountId,
               });
             },
           );
         }
-        const issues = await db.githubIssuesCache.orderBy('updatedAt').reverse().toArray();
-        set({ issues, stale: false, error: null });
+
+        const cached = await loadCachedState(accountId || null);
+        set({ issues: cached.issues, stale: false, error: null });
       } catch (error: any) {
-        if (error?.status === 401) {
+        const status = error?.status;
+        if (status === 401) {
           session.clear();
           set({ api: null, user: null, error: 'Сессия GitHub истекла. Войдите снова.' });
-        } else if (error?.status === 403 || error?.status === 429) {
-          set({ stale: true, error: 'GitHub API временно ограничил запросы. Показан кеш.' });
-        } else set({ stale: true, error: 'Не удалось обновить Issues. Показан кеш.' });
+        } else if (status === 403 || status === 429) {
+          const headers = error?.response?.headers || {};
+          const isRate = status === 429 || headers['x-ratelimit-remaining'] === '0';
+          if (isRate) {
+            set({ stale: true, error: 'GitHub API временно ограничил запросы. Показан кеш.' });
+          } else {
+            set({
+              stale: true,
+              error: 'Отказано в доступе. Убедитесь, что GitHub App имеет нужные разрешения.',
+            });
+          }
+        } else if (status === 404) {
+          set({ stale: true, error: 'Репозиторий не найден (404). Показан кеш.' });
+        } else {
+          set({ stale: true, error: 'Не удалось обновить Issues. Показан кеш.' });
+        }
       }
     },
 
@@ -378,6 +537,7 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     createTask: async (input) => {
+      const accountId = get().user ? String(get().user?.id) : undefined;
       if (!shouldPublishAsIssue(input.repositoryFullName, input.status)) {
         const note = createLocalNote({
           title: input.title,
@@ -387,13 +547,14 @@ export const useAppStore = create<AppState>((set, get) => {
           localTags: input.tags,
           checklist: input.checklist,
         });
+        note.accountId = accountId || null;
         await db.localNotes.add(note);
-        set({ notes: [note, ...get().notes], createOpen: false });
+        set({ notes: [note, ...get().notes], createDialog: { open: false } });
         return;
       }
+
       const repositoryFullName = input.repositoryFullName as string;
       const clientLocalId = crypto.randomUUID();
-      // Используем labelsForMove для атомарного вычисления labels
       const userLabels = input.tags.filter((t) => !t.startsWith('kf:') && !t.startsWith('km:'));
       const labels = labelsForMove(
         userLabels,
@@ -401,6 +562,7 @@ export const useAppStore = create<AppState>((set, get) => {
         input.priority,
       );
       const now = new Date().toISOString();
+
       const pending: GitHubIssue = {
         repositoryFullName,
         nodeId: `local:${clientLocalId}`,
@@ -425,9 +587,11 @@ export const useAppStore = create<AppState>((set, get) => {
         syncState: 'pending',
         statusConflict: false,
         priorityConflict: false,
+        accountId,
       };
-      await db.githubIssuesCache.add(pending);
-      await outboxProcessor.enqueue({
+
+      const outboxOp: OutboxOperation = {
+        id: crypto.randomUUID(),
         type: 'create_issue',
         entityKey: clientLocalId,
         repositoryFullName,
@@ -439,8 +603,23 @@ export const useAppStore = create<AppState>((set, get) => {
           state: pending.state,
           clientLocalId,
         },
+        state: 'pending',
+        requestStarted: false,
+        attemptCount: 0,
+        creationStage: 'not_started',
+        createdAt: now,
+        updatedAt: now,
+        accountId,
+      };
+
+      // Единая транзакция для сущности и outbox
+      await db.transaction('rw', db.githubIssuesCache, db.outbox, async () => {
+        await db.githubIssuesCache.add(pending);
+        await db.outbox.add(outboxOp);
       });
-      set({ issues: [pending, ...get().issues], createOpen: false });
+
+      const cached = await loadCachedState(accountId || null);
+      set({ ...cached, createDialog: { open: false } });
       await outboxProcessor.process();
     },
 
@@ -469,161 +648,193 @@ export const useAppStore = create<AppState>((set, get) => {
       set({ notes: get().notes.filter((note) => note.id !== id), selectedTask: null });
     },
 
-    changeIssueStatus: async (issue, status) => {
-      if (issue.issueNumber < 0) return;
-      const labelNames = labelsForStatus(
-        issue.labels.map((label) => label.name),
-        status,
-      );
-      const optimistic = {
-        ...issue,
-        derivedStatus: status,
-        state: status === 'done' ? ('closed' as const) : ('open' as const),
-        syncState: 'pending' as const,
-      };
-      await db.githubIssuesCache.put(optimistic);
-      set({
-        issues: get().issues.map((item) =>
-          issueKey(item) === issueKey(issue) ? optimistic : item,
-        ),
-      });
-      await outboxProcessor.enqueue({
-        type: 'update_issue',
-        entityKey: issueKey(issue),
-        repositoryFullName: issue.repositoryFullName,
-        payload: { issueNumber: issue.issueNumber, labels: labelNames, state: optimistic.state },
-      });
-      await outboxProcessor.process();
-    },
+    updateIssuePlacement: async (key, changes) => {
+      const issue = get().issues.find((i) => issueKey(i) === key || i.clientLocalId === key);
+      if (!issue || issue.issueNumber < 0) return;
 
-    changeIssuePriority: async (issue, priority) => {
-      if (issue.issueNumber < 0) return;
-      const labelNames = labelsForPriority(
-        issue.labels.map((label) => label.name),
-        priority,
-      );
-      const optimistic = { ...issue, derivedPriority: priority, syncState: 'pending' as const };
-      await db.githubIssuesCache.put(optimistic);
-      set({
-        issues: get().issues.map((item) =>
-          issueKey(item) === issueKey(issue) ? optimistic : item,
-        ),
-      });
-      await outboxProcessor.enqueue({
-        type: 'update_issue',
-        entityKey: issueKey(issue),
-        repositoryFullName: issue.repositoryFullName,
-        payload: { issueNumber: issue.issueNumber, labels: labelNames },
-      });
-      await outboxProcessor.process();
-    },
-
-    moveIssue: async (issue, { status, priority }) => {
-      if (issue.issueNumber < 0) return;
-      // Вычисляем итоговые labels атомарно — один раз
+      const targetStatus = changes.status ?? issue.derivedStatus;
+      const targetPriority = changes.priority ?? issue.derivedPriority;
       const finalLabels = labelsForMove(
-        issue.labels.map((label) => label.name),
-        status,
-        priority,
+        issue.labels.map((l) => l.name),
+        targetStatus,
+        targetPriority,
       );
+
       const optimistic: GitHubIssue = {
         ...issue,
-        derivedStatus: status,
-        derivedPriority: priority,
-        state: status === 'done' ? 'closed' : 'open',
+        derivedStatus: targetStatus,
+        derivedPriority: targetPriority,
+        state: targetStatus === 'done' ? 'closed' : 'open',
         labels: finalLabels.map((name) => {
           const existing = issue.labels.find((l) => l.name === name);
           return existing ?? { name, color: '8c959f' };
         }),
         syncState: 'pending',
+        updatedAt: new Date().toISOString(),
       };
-      // Одно оптимистичное обновление
-      await db.githubIssuesCache.put(optimistic);
-      set({
-        issues: get().issues.map((item) =>
-          issueKey(item) === issueKey(issue) ? optimistic : item,
-        ),
+
+      const accountId = get().user ? String(get().user?.id) : undefined;
+
+      await db.transaction('rw', db.githubIssuesCache, db.outbox, async () => {
+        await db.githubIssuesCache.put(optimistic);
+        const existingOp = await db.outbox
+          .where('entityKey')
+          .equals(key)
+          .and((op) => op.type === 'update_issue' && op.state !== 'syncing')
+          .last();
+
+        if (existingOp) {
+          await db.outbox.put({
+            ...existingOp,
+            payload: {
+              ...existingOp.payload,
+              labels: finalLabels,
+              state: optimistic.state,
+            },
+            state: 'pending',
+            updatedAt: new Date().toISOString(),
+          });
+        } else {
+          const op: OutboxOperation = {
+            id: crypto.randomUUID(),
+            type: 'update_issue',
+            entityKey: key,
+            repositoryFullName: issue.repositoryFullName,
+            payload: {
+              issueNumber: issue.issueNumber,
+              labels: finalLabels,
+              state: optimistic.state,
+            },
+            state: 'pending',
+            requestStarted: false,
+            attemptCount: 0,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            accountId,
+          };
+          await db.outbox.add(op);
+        }
       });
-      // Одна outbox-операция
-      await outboxProcessor.enqueue({
-        type: 'update_issue',
-        entityKey: issueKey(issue),
-        repositoryFullName: issue.repositoryFullName,
-        payload: {
-          issueNumber: issue.issueNumber,
-          labels: finalLabels,
-          state: optimistic.state,
-        },
-      });
+
+      const cached = await loadCachedState(accountId || null);
+      set(cached);
       await outboxProcessor.process();
+    },
+
+    changeIssueStatus: async (issue, status) => {
+      await get().updateIssuePlacement(issueKey(issue), { status });
+    },
+
+    changeIssuePriority: async (issue, priority) => {
+      await get().updateIssuePlacement(issueKey(issue), { priority });
+    },
+
+    moveIssue: async (issue, { status, priority }) => {
+      await get().updateIssuePlacement(issueKey(issue), { status, priority });
     },
 
     updateIssueFields: async (issue, changes) => {
       if (issue.issueNumber < 0) return;
+      const key = issueKey(issue);
       const optimistic = {
         ...issue,
         ...changes,
         updatedAt: new Date().toISOString(),
         syncState: 'pending' as const,
       };
-      await db.githubIssuesCache.put(optimistic);
-      set({
-        issues: get().issues.map((item) =>
-          issueKey(item) === issueKey(issue) ? optimistic : item,
-        ),
+      const accountId = get().user ? String(get().user?.id) : undefined;
+
+      await db.transaction('rw', db.githubIssuesCache, db.outbox, async () => {
+        await db.githubIssuesCache.put(optimistic);
+        await db.outbox.add({
+          id: crypto.randomUUID(),
+          type: 'update_issue',
+          entityKey: key,
+          repositoryFullName: issue.repositoryFullName,
+          payload: { issueNumber: issue.issueNumber, ...changes },
+          state: 'pending',
+          requestStarted: false,
+          attemptCount: 0,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          accountId,
+        });
       });
-      await outboxProcessor.enqueue({
-        type: 'update_issue',
-        entityKey: issueKey(issue),
-        repositoryFullName: issue.repositoryFullName,
-        payload: { issueNumber: issue.issueNumber, ...changes },
-      });
+
+      const cached = await loadCachedState(accountId || null);
+      set(cached);
       await outboxProcessor.process();
     },
 
     moveIssueToQuestion: async (issue) => {
       if (issue.issueNumber < 0) return;
-      // Извлекаем checklist из body, не копируем системные labels
+      const key = issueKey(issue);
       const { checklist, description } = extractChecklistFromMarkdown(issue.body);
       const userLabels = stripSystemLabels(issue.labels);
-      await outboxProcessor.enqueue({
-        type: 'close_and_copy',
-        entityKey: issueKey(issue),
-        repositoryFullName: issue.repositoryFullName,
-        payload: {
-          issueNumber: issue.issueNumber,
-          note: {
-            title: issue.title,
-            description,
-            status: 'question',
-            repositoryFullName: issue.repositoryFullName,
-            localTags: userLabels,
-            checklist,
+      const accountId = get().user ? String(get().user?.id) : undefined;
+
+      await db.transaction('rw', db.githubIssuesCache, db.outbox, async () => {
+        await db.outbox.add({
+          id: crypto.randomUUID(),
+          type: 'close_and_copy',
+          entityKey: key,
+          repositoryFullName: issue.repositoryFullName,
+          payload: {
+            issueNumber: issue.issueNumber,
+            note: {
+              title: issue.title,
+              description,
+              status: 'question',
+              repositoryFullName: issue.repositoryFullName,
+              localTags: userLabels,
+              checklist,
+            },
           },
-        },
+          state: 'pending',
+          requestStarted: false,
+          attemptCount: 0,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          accountId,
+        });
       });
+
+      const cached = await loadCachedState(accountId || null);
+      set(cached);
       await outboxProcessor.process();
     },
 
-    requestConversion: (noteId, repositoryFullName) => {
-      set({ conversionNoteId: noteId, conversionRepositoryFullName: repositoryFullName || null });
+    requestConversion: (noteId, context) => {
+      set({
+        conversionDialog: {
+          noteId,
+          repositoryFullName: context?.repositoryFullName,
+          status: context?.status,
+          priority: context?.priority,
+        },
+      });
     },
 
     confirmConversion: async (draft) => {
-      const note = get().notes.find((item) => item.id === get().conversionNoteId);
+      const note = get().notes.find((item) => item.id === get().conversionDialog.noteId);
       if (!note) return;
       const cachedLabels = await db.repositoryLabelsCache.get(draft.repositoryFullName);
       const repoLabelNames = cachedLabels?.labels.map((label) => label.name) || [];
-      // Совпавшие теги (только если они есть в репозитории)
       const matchedTags = note.localTags.filter((tag) => repoLabelNames.includes(tag));
       let labels = [...new Set([...draft.labels, ...matchedTags])];
       labels = labelsForMove(labels, draft.status, draft.priority);
-      await get().updateNote(note.id, {
+
+      const accountId = get().user ? String(get().user?.id) : undefined;
+      const updatedNote: LocalNote = {
+        ...note,
         syncState: 'pending',
         pendingConversionData: draft,
         repositoryFullName: draft.repositoryFullName,
-      });
-      await outboxProcessor.enqueue({
+        updatedAt: new Date().toISOString(),
+      };
+
+      const outboxOp: OutboxOperation = {
+        id: crypto.randomUUID(),
         type: 'convert_note',
         entityKey: note.id,
         repositoryFullName: draft.repositoryFullName,
@@ -635,8 +846,23 @@ export const useAppStore = create<AppState>((set, get) => {
           assignees: draft.assignees,
           state: draft.status === 'done' ? 'closed' : 'open',
         },
+        state: 'pending',
+        requestStarted: false,
+        attemptCount: 0,
+        creationStage: 'not_started',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        accountId,
+      };
+
+      // Атомарное обновление заметки и outbox
+      await db.transaction('rw', db.localNotes, db.outbox, async () => {
+        await db.localNotes.put(updatedNote);
+        await db.outbox.add(outboxOp);
       });
-      set({ conversionNoteId: null, conversionRepositoryFullName: null });
+
+      const cached = await loadCachedState(accountId || null);
+      set({ ...cached, conversionDialog: { noteId: null } });
       await outboxProcessor.process();
     },
 
@@ -645,11 +871,13 @@ export const useAppStore = create<AppState>((set, get) => {
         ? get().tabs.find((tab) => entitySignature(tab.entity) === entitySignature(entity))
         : undefined;
       if (existing) return get().selectTab(existing.id);
+
+      const accountId = get().user ? String(get().user?.id) : undefined;
       if (!options?.newTab) {
         const tabs = get().tabs.map((tab) =>
           tab.active ? { ...tab, entity, title: titleForEntity(entity) } : tab,
         );
-        await persistTabs(tabs);
+        await persistTabs(tabs, accountId);
         set({ tabs, selectedTask: null });
         return;
       }
@@ -660,19 +888,27 @@ export const useAppStore = create<AppState>((set, get) => {
         title: titleForEntity(entity),
         position: tabs.length,
         active: true,
+        accountId,
       };
       const next = [...tabs, tab];
-      await persistTabs(next);
+      await persistTabs(next, accountId);
       set({ tabs: next, selectedTask: null });
     },
 
     closeTab: async (id) => {
       const current = get().tabs;
+      const accountId = get().user ? String(get().user?.id) : undefined;
       if (current.length === 1) {
         const reset = [
-          { ...current[0]!, entity: { kind: 'all' } as const, title: 'Все задачи', active: true },
+          {
+            ...current[0]!,
+            entity: { kind: 'all' } as const,
+            title: 'Все задачи',
+            active: true,
+            accountId,
+          },
         ];
-        await persistTabs(reset);
+        await persistTabs(reset, accountId);
         set({ tabs: reset });
         return;
       }
@@ -685,31 +921,87 @@ export const useAppStore = create<AppState>((set, get) => {
           ...tab,
           active: index === Math.max(0, next.length - 1),
         }));
-      await persistTabs(next);
+      await persistTabs(next, accountId);
       set({ tabs: next });
     },
 
     selectTab: async (id) => {
+      const accountId = get().user ? String(get().user?.id) : undefined;
       const tabs = get().tabs.map((tab) => ({ ...tab, active: tab.id === id }));
-      await persistTabs(tabs);
+      await persistTabs(tabs, accountId);
       set({ tabs, selectedTask: null });
     },
 
     setSelectedTask: (selectedTask) => set({ selectedTask }),
-    setCreateOpen: (createOpen) => set({ createOpen }),
-    setRepositoryPickerOpen: (repositoryPickerOpen) => set({ repositoryPickerOpen }),
-    setConversionNoteId: (conversionNoteId) =>
+    setCreateOpen: (open, context) =>
       set({
-        conversionNoteId,
-        conversionRepositoryFullName: conversionNoteId ? get().conversionRepositoryFullName : null,
+        createDialog: {
+          open,
+          initialRepositoryFullName: context?.initialRepositoryFullName,
+          initialStatus: context?.initialStatus,
+          initialPriority: context?.initialPriority,
+        },
+      }),
+    setRepositoryPickerOpen: (repositoryPickerOpen) => set({ repositoryPickerOpen }),
+    setConversionNoteId: (noteId) =>
+      set({
+        conversionDialog: {
+          noteId,
+          repositoryFullName: noteId ? get().conversionDialog.repositoryFullName : undefined,
+        },
       }),
     retryOperation: async (id) => outboxProcessor.retry(id),
 
     getRepositoryLabels: async (repositoryFullName) => {
+      const api = get().api;
+      if (navigator.onLine && api) {
+        try {
+          const freshLabels = await api.getLabels(repositoryFullName);
+          await db.repositoryLabelsCache.put({
+            repositoryFullName,
+            labels: freshLabels,
+            cachedAt: new Date().toISOString(),
+            accountId: get().user ? String(get().user?.id) : undefined,
+          });
+          return visibleLabels(freshLabels);
+        } catch {
+          // fall through to cache
+        }
+      }
       const cached = await db.repositoryLabelsCache.get(repositoryFullName);
       if (!cached) return [];
-      // Возвращаем только пользовательские labels (без системных)
       return visibleLabels(cached.labels);
+    },
+
+    getRepositoryAssignees: async (repositoryFullName) => {
+      const api = get().api;
+      if (navigator.onLine && api) {
+        try {
+          const issues = await api.getIssues(repositoryFullName);
+          const assigneesSet = new Set<string>();
+          for (const issue of issues) {
+            for (const assignee of issue.assignees) {
+              if (assignee) assigneesSet.add(assignee);
+            }
+          }
+          if (get().user?.login) assigneesSet.add(get().user!.login);
+          return Array.from(assigneesSet);
+        } catch {
+          // fallback below
+        }
+      }
+      const cachedIssues = await db.githubIssuesCache
+        .where('repositoryFullName')
+        .equals(repositoryFullName)
+        .toArray();
+      const assigneesSet = new Set<string>();
+      for (const issue of cachedIssues) {
+        for (const assignee of issue.assignees) {
+          if (assignee) assigneesSet.add(assignee);
+        }
+      }
+      if (get().user?.login) assigneesSet.add(get().user!.login);
+      return Array.from(assigneesSet);
     },
   };
 });

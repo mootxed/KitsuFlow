@@ -28,7 +28,6 @@ const errorBody = (error: unknown): string => {
   return '';
 };
 
-/** Определяет, является ли ошибка rate-limit (а не permission denied). */
 function isRateLimit(status: number | undefined, error: unknown): boolean {
   if (status === 429) return true;
   if (status !== 403) return false;
@@ -48,21 +47,37 @@ const retryAtFromError = (error: unknown): string => {
   return new Date(epoch > Date.now() ? epoch : Date.now() + 60_000).toISOString();
 };
 
-/** Формирует человекочитаемое описание ошибки без токена. */
 function safeMessage(error: unknown): string {
   if (!(error instanceof Error)) return 'Ошибка синхронизации';
-  // Никогда не включаем токен в сообщение об ошибке
-  const msg = error.message.replace(/ghp_\S+|gho_\S+|Bearer\s+\S+/g, '[REDACTED]');
-  return msg;
+  return error.message.replace(/ghp_\S+|gho_\S+|Bearer\s+\S+/g, '[REDACTED]');
 }
 
 export class OutboxProcessor {
-  private running = false;
+  private currentProcessPromise: Promise<void> | null = null;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly instanceId = crypto.randomUUID();
 
   constructor(
     private readonly getApi: () => GitHubApi | null,
     private readonly onEvent: (event: SyncEvent) => void,
-  ) {}
+    private readonly onIssueCreated?: (
+      tempId: string | number,
+      realIssue: GitHubIssue,
+    ) => Promise<void>,
+  ) {
+    void this.restoreTimerFromDB();
+  }
+
+  public destroy(): void {
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+  }
+
+  async restoreTimerFromDB(): Promise<void> {
+    await this.scheduleNextRetry();
+  }
 
   async enqueue(
     input: Omit<
@@ -78,104 +93,323 @@ export class OutboxProcessor {
         .and((operation) => operation.type === 'update_issue' && operation.state !== 'syncing')
         .last();
       if (existing) {
-        const merged = {
+        const merged: OutboxOperation = {
           ...existing,
           payload: { ...existing.payload, ...input.payload },
-          state: 'pending' as const,
+          state: 'pending',
           updatedAt: now,
         };
         await db.outbox.put(merged);
         this.onEvent({ type: 'changed' });
+        void this.process();
         return merged;
       }
     }
+
     const operation: OutboxOperation = {
       ...input,
       id: crypto.randomUUID(),
       state: 'pending',
       requestStarted: false,
       attemptCount: 0,
+      creationStage: 'not_started',
       createdAt: now,
       updatedAt: now,
     };
     await db.outbox.add(operation);
     this.onEvent({ type: 'changed' });
+    void this.process();
     return operation;
   }
 
-  /**
-   * Сбрасывает операцию в состояние pending для ручного повтора.
-   * Работает для состояний failed, attention и exhausted.
-   */
   async retry(id: string): Promise<void> {
+    const existing = await db.outbox.get(id);
+    if (!existing) return;
+
     await db.outbox.update(id, {
       state: 'pending',
       requestStarted: false,
       nextAttemptAt: undefined,
       lastError: undefined,
+      claimedAt: undefined,
+      leaseOwner: undefined,
+      leaseExpiresAt: undefined,
       updatedAt: new Date().toISOString(),
     });
+    this.onEvent({ type: 'changed' });
     await this.process();
   }
 
-  async process(): Promise<void> {
-    if (this.running || !navigator.onLine) return;
+  process(): Promise<void> {
+    if (this.currentProcessPromise) {
+      return this.currentProcessPromise;
+    }
+
+    this.currentProcessPromise = this.runLoop().finally(() => {
+      this.currentProcessPromise = null;
+      void this.scheduleNextRetry();
+      this.onEvent({ type: 'changed' });
+    });
+
+    return this.currentProcessPromise;
+  }
+
+  private async runLoop(): Promise<void> {
+    if (!navigator.onLine) return;
     const api = this.getApi();
     if (!api) return;
-    this.running = true;
-    try {
-      // Выбираем только pending и failed с допустимым nextAttemptAt.
-      // attention и exhausted НЕ выбираются — только через retry().
+
+    if (typeof navigator !== 'undefined' && 'locks' in navigator && navigator.locks?.request) {
+      await navigator.locks.request(
+        'kitsuflow_outbox_lock',
+        { ifAvailable: true },
+        async (lock) => {
+          if (!lock) return;
+          await this.executeLoop(api);
+        },
+      );
+    } else {
+      await this.executeLoop(api);
+    }
+  }
+
+  private async executeLoop(api: GitHubApi): Promise<void> {
+    await this.recoverStaleSyncing();
+
+    while (navigator.onLine && this.getApi()) {
       const operations = await db.outbox
         .where('state')
         .anyOf('pending', 'failed')
         .sortBy('createdAt');
-      for (const operation of operations) {
-        // Пропускаем failed, у которых ещё не наступило время повтора
-        if (operation.nextAttemptAt && new Date(operation.nextAttemptAt).getTime() > Date.now())
-          continue;
-        const shouldContinue = await this.execute(api, operation);
-        if (!shouldContinue) break;
-      }
-    } finally {
-      this.running = false;
-      this.onEvent({ type: 'changed' });
+
+      const readyOperation = operations.find((op) => {
+        if (op.state === 'failed' && op.nextAttemptAt) {
+          return new Date(op.nextAttemptAt).getTime() <= Date.now();
+        }
+        return op.state === 'pending';
+      });
+
+      if (!readyOperation) break;
+
+      const shouldContinue = await this.execute(api, readyOperation);
+      if (!shouldContinue) break;
     }
   }
 
+  private async recoverStaleSyncing(): Promise<void> {
+    const syncingOps = await db.outbox.where('state').equals('syncing').toArray();
+    const now = Date.now();
+
+    for (const op of syncingOps) {
+      const leaseExpired = op.leaseExpiresAt ? new Date(op.leaseExpiresAt).getTime() <= now : true;
+      if (!leaseExpired) continue;
+
+      const isCreate = op.type === 'create_issue' || op.type === 'convert_note';
+      if (isCreate) {
+        if (op.creationStage === 'issue_created' && op.createdIssueNumber) {
+          await db.outbox.update(op.id, {
+            state: 'pending',
+            requestStarted: false,
+            claimedAt: undefined,
+            leaseOwner: undefined,
+            leaseExpiresAt: undefined,
+            updatedAt: new Date().toISOString(),
+          });
+        } else if (op.requestStarted) {
+          await db.outbox.update(op.id, {
+            state: 'attention',
+            lastError:
+              'Операция создания прервана во время запроса. Проверьте GitHub перед повтором во избежание дубликата.',
+            claimedAt: undefined,
+            leaseOwner: undefined,
+            leaseExpiresAt: undefined,
+            updatedAt: new Date().toISOString(),
+          });
+        } else {
+          await db.outbox.update(op.id, {
+            state: 'pending',
+            claimedAt: undefined,
+            leaseOwner: undefined,
+            leaseExpiresAt: undefined,
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      } else {
+        await db.outbox.update(op.id, {
+          state: 'pending',
+          requestStarted: false,
+          claimedAt: undefined,
+          leaseOwner: undefined,
+          leaseExpiresAt: undefined,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    }
+  }
+
+  private async scheduleNextRetry(): Promise<void> {
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+
+    const failedOps = await db.outbox.where('state').equals('failed').toArray();
+
+    const futureOps = failedOps.filter(
+      (op) => op.nextAttemptAt && new Date(op.nextAttemptAt).getTime() > Date.now(),
+    );
+
+    if (futureOps.length === 0) return;
+
+    futureOps.sort(
+      (a, b) => new Date(a.nextAttemptAt!).getTime() - new Date(b.nextAttemptAt!).getTime(),
+    );
+
+    const earliest = futureOps[0];
+    if (!earliest?.nextAttemptAt) return;
+
+    const delay = Math.max(0, new Date(earliest.nextAttemptAt).getTime() - Date.now());
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.process();
+    }, delay);
+  }
+
   private async execute(api: GitHubApi, operation: OutboxOperation): Promise<boolean> {
-    // Инкрементируем attemptCount один раз — здесь, перед попыткой.
+    const now = new Date();
+    const leaseExpiresAt = new Date(now.getTime() + 30_000).toISOString();
     const attemptCount = operation.attemptCount + 1;
+
     await db.outbox.update(operation.id, {
       state: 'syncing',
       requestStarted: true,
       attemptCount,
-      updatedAt: new Date().toISOString(),
+      claimedAt: now.toISOString(),
+      leaseOwner: this.instanceId,
+      leaseExpiresAt,
+      updatedAt: now.toISOString(),
     });
+
     try {
       if (operation.type === 'create_issue' || operation.type === 'convert_note') {
-        const issue = await api.createIssue(operation.repositoryFullName, {
-          title: String(operation.payload.title || ''),
-          body: String(operation.payload.body || ''),
-          labels: (operation.payload.labels as string[]) || [],
-          assignees: (operation.payload.assignees as string[]) || [],
-        });
+        let issueNumber = operation.createdIssueNumber;
+        let nodeId = operation.createdIssueNodeId;
+        let createdIssue: GitHubIssue | null = null;
+
+        // ЭТАП 1: Выполнить POST только если issueNumber ещё не получен
+        if (!issueNumber) {
+          const newIssue = await api.createIssue(operation.repositoryFullName, {
+            title: String(operation.payload.title || ''),
+            body: String(operation.payload.body || ''),
+            labels: (operation.payload.labels as string[]) || [],
+            assignees: (operation.payload.assignees as string[]) || [],
+          });
+
+          issueNumber = newIssue.issueNumber;
+          nodeId = newIssue.nodeId;
+          createdIssue = newIssue;
+
+          operation.creationStage = 'issue_created';
+          operation.createdIssueNumber = issueNumber;
+          operation.createdIssueNodeId = nodeId;
+
+          // СРАЗУ сохранить номер и stage в outbox
+          await db.outbox.update(operation.id, {
+            creationStage: 'issue_created',
+            createdIssueNumber: issueNumber,
+            createdIssueNodeId: nodeId,
+            updatedAt: new Date().toISOString(),
+          });
+        }
+
+        // ЭТАП 2: PATCH для закрытия (если необходимо)
         const desiredState = operation.payload.state;
-        const finalIssue: GitHubIssue =
-          desiredState === 'closed'
-            ? await api.updateIssue(issue.repositoryFullName, issue.issueNumber, {
-                state: 'closed',
-              })
-            : issue;
-        await db.transaction('rw', db.githubIssuesCache, db.localNotes, db.outbox, async () => {
-          const clientLocalId = operation.payload.clientLocalId;
-          if (typeof clientLocalId === 'string') {
-            await db.githubIssuesCache.where('clientLocalId').equals(clientLocalId).delete();
+        if (desiredState === 'closed') {
+          operation.creationStage = 'applying_final_state';
+          await db.outbox.update(operation.id, {
+            creationStage: 'applying_final_state',
+            updatedAt: new Date().toISOString(),
+          });
+
+          createdIssue = await api.updateIssue(operation.repositoryFullName, issueNumber, {
+            state: 'closed',
+          });
+        } else if (!createdIssue) {
+          // Если POST был выполнен ранее, но PATCH не требовался — прочитать актуальный Issue
+          const fetched = await api.getIssues(operation.repositoryFullName);
+          const found = fetched.find((i) => i.issueNumber === issueNumber);
+          if (found) {
+            createdIssue = found;
+          } else {
+            createdIssue = {
+              repositoryFullName: operation.repositoryFullName,
+              nodeId: nodeId || '',
+              issueNumber,
+              title: String(operation.payload.title || ''),
+              body: String(operation.payload.body || ''),
+              state: 'open',
+              derivedStatus: 'todo',
+              derivedPriority: 'none',
+              labels: [],
+              assignees: (operation.payload.assignees as string[]) || [],
+              htmlUrl: `https://github.com/${operation.repositoryFullName}/issues/${issueNumber}`,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              cachedAt: new Date().toISOString(),
+              syncState: 'synced',
+              statusConflict: false,
+              priorityConflict: false,
+            };
           }
-          await db.githubIssuesCache.put(finalIssue);
-          if (operation.sourceNoteId) await db.localNotes.delete(operation.sourceNoteId);
-          await db.outbox.delete(operation.id);
-        });
+        }
+
+        const finalIssue = createdIssue;
+        const clientLocalId = operation.payload.clientLocalId as string | undefined;
+
+        // Завершающая атомарная транзакция
+        await db.transaction(
+          'rw',
+          db.githubIssuesCache,
+          db.localNotes,
+          db.outbox,
+          db.tabs,
+          async () => {
+            if (clientLocalId) {
+              await db.githubIssuesCache.where('clientLocalId').equals(clientLocalId).delete();
+            }
+
+            await db.githubIssuesCache.put(finalIssue);
+
+            if (operation.sourceNoteId) {
+              await db.localNotes.delete(operation.sourceNoteId);
+            }
+
+            // Обновить вкладки с временным номером/clientLocalId на настоящий issueNumber
+            const allTabs = await db.tabs.toArray();
+
+            for (const tab of allTabs) {
+              if (
+                tab.entity.kind === 'issue' &&
+                tab.entity.repositoryFullName === finalIssue.repositoryFullName
+              ) {
+                if (
+                  tab.entity.issueNumber < 0 ||
+                  (clientLocalId && String(tab.entity.issueNumber) === clientLocalId)
+                ) {
+                  tab.entity.issueNumber = finalIssue.issueNumber;
+                  tab.title = `${finalIssue.repositoryFullName.split('/')[1]} #${finalIssue.issueNumber}`;
+                  await db.tabs.put(tab);
+                }
+              }
+            }
+
+            await db.outbox.delete(operation.id);
+          },
+        );
+
+        if (this.onIssueCreated && clientLocalId) {
+          await this.onIssueCreated(clientLocalId, finalIssue);
+        }
       } else if (operation.type === 'update_issue') {
         const issueNumber = Number(operation.payload.issueNumber);
         const issue = await api.updateIssue(operation.repositoryFullName, issueNumber, {
@@ -185,6 +419,7 @@ export class OutboxProcessor {
           assignees: operation.payload.assignees as string[] | undefined,
           state: operation.payload.state as 'open' | 'closed' | undefined,
         });
+
         await db.transaction('rw', db.githubIssuesCache, db.outbox, async () => {
           await db.githubIssuesCache.put(issue);
           await db.outbox.delete(operation.id);
@@ -194,6 +429,7 @@ export class OutboxProcessor {
         const issue = await api.updateIssue(operation.repositoryFullName, issueNumber, {
           state: 'closed',
         });
+
         const rawNote = operation.payload.note as any;
         const note = createLocalNote({
           title: String(rawNote.title || issue.title),
@@ -203,18 +439,19 @@ export class OutboxProcessor {
           localTags: Array.isArray(rawNote.localTags) ? rawNote.localTags : [],
           checklist: Array.isArray(rawNote.checklist) ? rawNote.checklist : [],
         });
+
         await db.transaction('rw', db.githubIssuesCache, db.localNotes, db.outbox, async () => {
           await db.githubIssuesCache.put(issue);
           await db.localNotes.add(note);
           await db.outbox.delete(operation.id);
         });
       }
+
       return true;
     } catch (error) {
       const status = errorStatus(error);
       const message = safeMessage(error);
 
-      // 401 — сессия истекла
       if (status === 401) {
         await db.outbox.update(operation.id, {
           state: 'failed',
@@ -225,7 +462,6 @@ export class OutboxProcessor {
         return false;
       }
 
-      // Rate limit: 429 или 403 с x-ratelimit-remaining=0
       if (isRateLimit(status, error)) {
         const retryAt = retryAtFromError(error);
         await db.outbox.update(operation.id, {
@@ -238,7 +474,6 @@ export class OutboxProcessor {
         return false;
       }
 
-      // 403 без признаков rate limit — недостаточно разрешений
       if (status === 403) {
         const hint = 'Убедитесь, что GitHub App установлен с разрешением Issues: Read & write.';
         await db.outbox.update(operation.id, {
@@ -250,7 +485,6 @@ export class OutboxProcessor {
         return false;
       }
 
-      // 404 — репозиторий или Issue недоступен
       if (status === 404) {
         await db.outbox.update(operation.id, {
           state: 'attention',
@@ -260,7 +494,6 @@ export class OutboxProcessor {
         return true;
       }
 
-      // 422 — ошибка в данных или конфликт GitHub API
       if (status === 422) {
         await db.outbox.update(operation.id, {
           state: 'attention',
@@ -270,9 +503,12 @@ export class OutboxProcessor {
         return true;
       }
 
-      // Для create/convert — неопределённость: возможно Issue создался
       const isCreate = operation.type === 'create_issue' || operation.type === 'convert_note';
-      if (isCreate) {
+      // Если POST завершился ошибкой и issueNumber ещё не создан -> перевести в attention
+      if (
+        isCreate &&
+        (!operation.createdIssueNumber || operation.creationStage === 'not_started')
+      ) {
         await db.outbox.update(operation.id, {
           state: 'attention',
           lastError: `Неизвестно, создался ли Issue: ${message}. Проверьте GitHub перед повтором.`,
@@ -281,7 +517,7 @@ export class OutboxProcessor {
         return true;
       }
 
-      // Для update: exponential backoff до maxSyncAttempts, затем exhausted
+      // Для update или повтора PATCH в условном создании: exponential backoff до maxSyncAttempts, затем exhausted
       const exhausted = attemptCount >= APP_CONFIG.maxSyncAttempts;
       await db.outbox.update(operation.id, {
         state: exhausted ? 'exhausted' : 'failed',

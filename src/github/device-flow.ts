@@ -10,7 +10,7 @@ export type DeviceFlowState =
       expiresAt: number;
       interval: number;
     }
-  | { phase: 'success'; token: string }
+  | { phase: 'success' }
   | { phase: 'expired'; message: string }
   | { phase: 'error'; message: string };
 
@@ -141,7 +141,7 @@ export class DeviceFlowController {
           signal,
         );
         if (token.access_token) {
-          onState({ phase: 'success', token: token.access_token });
+          onState({ phase: 'success' });
           return token.access_token;
         }
         if (token.error === 'authorization_pending') continue;

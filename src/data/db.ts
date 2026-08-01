@@ -54,6 +54,27 @@ export class KitsuFlowDatabase extends Dexie {
             operation.requestStarted ??= false;
           });
       });
+    this.version(3)
+      .stores({
+        localNotes: 'id, status, repositoryFullName, updatedAt, syncState, accountId',
+        githubIssuesCache:
+          '[repositoryFullName+issueNumber], repositoryFullName, accountId, derivedStatus, updatedAt, syncState, clientLocalId',
+        repositoriesCache: 'fullName, pinned, installationId, accountId, updatedAt',
+        repositoryLabelsCache: 'repositoryFullName, accountId, cachedAt',
+        outbox:
+          'id, type, entityKey, state, repositoryFullName, accountId, createdAt, nextAttemptAt, leaseExpiresAt',
+        tabs: 'id, accountId, active, position',
+        settings: 'key',
+        syncMetadata: 'key, accountId, updatedAt',
+      })
+      .upgrade(async (transaction) => {
+        await transaction
+          .table('outbox')
+          .toCollection()
+          .modify((op: Record<string, unknown>) => {
+            op.creationStage ??= 'not_started';
+          });
+      });
   }
 }
 

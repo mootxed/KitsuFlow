@@ -92,7 +92,14 @@ export function RepositoryBoard({ repositoryFullName }: { repositoryFullName: st
         </div>
         <div className="header-actions">
           <button onClick={() => void refreshIssues(repositoryFullName)}>Обновить</button>
-          <button className="primary" onClick={() => setCreateOpen(true)}>
+          <button
+            className="primary"
+            onClick={() =>
+              setCreateOpen(true, {
+                initialRepositoryFullName: repositoryFullName,
+              })
+            }
+          >
             <Plus size={15} /> Issue
           </button>
         </div>
