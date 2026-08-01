@@ -22,8 +22,8 @@ export function QuickCreateModal() {
   const titleRef = useRef<HTMLInputElement>(null);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [status, setStatus] = useState<TaskStatus>('todo');
-  const [repository, setRepository] = useState('');
+  const [status, setStatus] = useState<TaskStatus>(createDialog.initialStatus ?? 'todo');
+  const [repository, setRepository] = useState(createDialog.initialRepositoryFullName ?? '');
   const [tags, setTags] = useState('');
   const [availableLabels, setAvailableLabels] = useState<Array<{ name: string; color: string }>>(
     [],
@@ -32,7 +32,7 @@ export function QuickCreateModal() {
   const [availableAssignees, setAvailableAssignees] = useState<string[]>([]);
   const [assignee, setAssignee] = useState('');
   const [checklist, setChecklist] = useState('');
-  const [priority, setPriority] = useState<IssuePriority>('none');
+  const [priority, setPriority] = useState<IssuePriority>(createDialog.initialPriority ?? 'none');
   const [loadingLabels, setLoadingLabels] = useState(false);
 
   const open = createDialog.open;
@@ -178,8 +178,21 @@ export function QuickCreateModal() {
             <select value={repository} onChange={(event) => setRepository(event.target.value)}>
               <option value="">Локальная заметка</option>
               {repositories.map((repo) => (
-                <option key={repo.fullName}>{repo.fullName}</option>
+                <option key={repo.fullName} value={repo.fullName}>
+                  {repo.fullName}
+                </option>
               ))}
+              {createDialog.initialRepositoryFullName &&
+                !repositories.some(
+                  (r) => r.fullName === createDialog.initialRepositoryFullName,
+                ) && (
+                  <option
+                    key={createDialog.initialRepositoryFullName}
+                    value={createDialog.initialRepositoryFullName}
+                  >
+                    {createDialog.initialRepositoryFullName}
+                  </option>
+                )}
             </select>
           </label>
           <label>
