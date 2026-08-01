@@ -1,8 +1,9 @@
 import { APP_CONFIG } from '../config';
 import { db } from '../data/db';
+import { assertAccountId } from '../domain/github-mapping';
+import { createLocalNote } from '../domain/notes';
 import type { GitHubIssue, OutboxOperation } from '../domain/types';
 import { GitHubApi } from '../github/api';
-import { createLocalNote } from '../domain/notes';
 
 export type SyncEvent =
   | { type: 'changed' }
@@ -10,20 +11,33 @@ export type SyncEvent =
   | { type: 'rate-limited'; retryAt: string }
   | { type: 'permission-denied'; message: string };
 
-const errorStatus = (error: unknown): number | undefined =>
-  typeof error === 'object' && error !== null && 'status' in error
-    ? Number((error as { status?: unknown }).status)
-    : undefined;
+export interface GitHubRequestError {
+  status?: number;
+  response?: {
+    headers?: Record<string, string>;
+    data?: {
+      message?: string;
+    };
+  };
+}
+
+const errorStatus = (error: unknown): number | undefined => {
+  if (typeof error === 'object' && error !== null && 'status' in error) {
+    const s = (error as GitHubRequestError).status;
+    return typeof s === 'number' ? s : undefined;
+  }
+  return undefined;
+};
 
 const errorHeaders = (error: unknown): Record<string, string> => {
   if (typeof error !== 'object' || error === null) return {};
-  const resp = (error as any).response;
+  const resp = (error as GitHubRequestError).response;
   return resp?.headers ?? {};
 };
 
 const errorBody = (error: unknown): string => {
   if (typeof error !== 'object' || error === null) return '';
-  const resp = (error as any).response?.data;
+  const resp = (error as GitHubRequestError).response?.data;
   if (typeof resp?.message === 'string') return resp.message.toLowerCase();
   return '';
 };
@@ -52,19 +66,55 @@ function safeMessage(error: unknown): string {
   return error.message.replace(/ghp_\S+|gho_\S+|Bearer\s+\S+/g, '[REDACTED]');
 }
 
+export interface OutboxProcessorOptions {
+  getApi: () => GitHubApi | null;
+  getActiveAccountId: () => string | null;
+  onEvent: (event: SyncEvent) => void;
+  onIssueCreated?: ((tempId: string | number, realIssue: GitHubIssue) => Promise<void>) | undefined;
+}
+
 export class OutboxProcessor {
   private currentProcessPromise: Promise<void> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly instanceId = crypto.randomUUID();
 
+  private readonly getApi: () => GitHubApi | null;
+  private readonly getActiveAccountId: () => string | null;
+  private readonly onEvent: (event: SyncEvent) => void;
+  private readonly onIssueCreated?:
+    ((tempId: string | number, realIssue: GitHubIssue) => Promise<void>) | undefined;
+
   constructor(
-    private readonly getApi: () => GitHubApi | null,
-    private readonly onEvent: (event: SyncEvent) => void,
-    private readonly onIssueCreated?: (
-      tempId: string | number,
-      realIssue: GitHubIssue,
-    ) => Promise<void>,
+    optionsOrGetApi: OutboxProcessorOptions | (() => GitHubApi | null),
+    onEventOrGetActiveAccountId?: ((event: SyncEvent) => void) | (() => string | null),
+    onIssueCreatedOrOnEvent?:
+      | ((tempId: string | number, realIssue: GitHubIssue) => Promise<void>)
+      | ((event: SyncEvent) => void),
+    onIssueCreatedLegacy?: (tempId: string | number, realIssue: GitHubIssue) => Promise<void>,
   ) {
+    if (typeof optionsOrGetApi === 'object' && optionsOrGetApi !== null) {
+      this.getApi = optionsOrGetApi.getApi;
+      this.getActiveAccountId = optionsOrGetApi.getActiveAccountId;
+      this.onEvent = optionsOrGetApi.onEvent;
+      this.onIssueCreated = optionsOrGetApi.onIssueCreated;
+    } else {
+      this.getApi = optionsOrGetApi as () => GitHubApi | null;
+      if (
+        typeof onEventOrGetActiveAccountId === 'function' &&
+        onEventOrGetActiveAccountId.length === 0
+      ) {
+        this.getActiveAccountId = onEventOrGetActiveAccountId as () => string | null;
+        this.onEvent = onIssueCreatedOrOnEvent as (event: SyncEvent) => void;
+        this.onIssueCreated = onIssueCreatedLegacy;
+      } else {
+        this.getActiveAccountId = () => null;
+        this.onEvent = onEventOrGetActiveAccountId as (event: SyncEvent) => void;
+        this.onIssueCreated = onIssueCreatedOrOnEvent as (
+          tempId: string | number,
+          realIssue: GitHubIssue,
+        ) => Promise<void>;
+      }
+    }
     void this.restoreTimerFromDB();
   }
 
@@ -85,12 +135,18 @@ export class OutboxProcessor {
       'id' | 'state' | 'requestStarted' | 'attemptCount' | 'createdAt' | 'updatedAt'
     >,
   ): Promise<OutboxOperation> {
+    assertAccountId(input.accountId);
     const now = new Date().toISOString();
     if (input.type === 'update_issue') {
       const existing = await db.outbox
         .where('entityKey')
         .equals(input.entityKey)
-        .and((operation) => operation.type === 'update_issue' && operation.state !== 'syncing')
+        .and(
+          (op) =>
+            op.type === 'update_issue' &&
+            op.state !== 'syncing' &&
+            op.accountId === input.accountId,
+        )
         .last();
       if (existing) {
         const merged: OutboxOperation = {
@@ -128,6 +184,7 @@ export class OutboxProcessor {
 
     await db.outbox.update(id, {
       state: 'pending',
+      attemptCount: 0,
       requestStarted: false,
       nextAttemptAt: undefined,
       lastError: undefined,
@@ -156,30 +213,33 @@ export class OutboxProcessor {
 
   private async runLoop(): Promise<void> {
     if (!navigator.onLine) return;
+    const activeAccountId = this.getActiveAccountId();
+    if (!activeAccountId) return;
     const api = this.getApi();
     if (!api) return;
 
     if (typeof navigator !== 'undefined' && 'locks' in navigator && navigator.locks?.request) {
       await navigator.locks.request(
-        'kitsuflow_outbox_lock',
+        `kitsuflow_outbox_lock_${activeAccountId}`,
         { ifAvailable: true },
         async (lock) => {
           if (!lock) return;
-          await this.executeLoop(api);
+          await this.executeLoop(api, activeAccountId);
         },
       );
     } else {
-      await this.executeLoop(api);
+      await this.executeLoop(api, activeAccountId);
     }
   }
 
-  private async executeLoop(api: GitHubApi): Promise<void> {
-    await this.recoverStaleSyncing();
+  private async executeLoop(api: GitHubApi, activeAccountId: string): Promise<void> {
+    await this.recoverStaleSyncing(activeAccountId);
 
-    while (navigator.onLine && this.getApi()) {
+    while (navigator.onLine && this.getApi() && this.getActiveAccountId() === activeAccountId) {
       const operations = await db.outbox
-        .where('state')
-        .anyOf('pending', 'failed')
+        .where('accountId')
+        .equals(activeAccountId)
+        .and((op) => op.state === 'pending' || op.state === 'failed')
         .sortBy('createdAt');
 
       const readyOperation = operations.find((op) => {
@@ -191,13 +251,18 @@ export class OutboxProcessor {
 
       if (!readyOperation) break;
 
-      const shouldContinue = await this.execute(api, readyOperation);
+      const shouldContinue = await this.claimAndExecute(api, readyOperation.id, activeAccountId);
       if (!shouldContinue) break;
     }
   }
 
-  private async recoverStaleSyncing(): Promise<void> {
-    const syncingOps = await db.outbox.where('state').equals('syncing').toArray();
+  private async recoverStaleSyncing(activeAccountId: string): Promise<void> {
+    const syncingOps = await db.outbox
+      .where('accountId')
+      .equals(activeAccountId)
+      .and((op) => op.state === 'syncing')
+      .toArray();
+
     const now = Date.now();
 
     for (const op of syncingOps) {
@@ -206,7 +271,10 @@ export class OutboxProcessor {
 
       const isCreate = op.type === 'create_issue' || op.type === 'convert_note';
       if (isCreate) {
-        if (op.creationStage === 'issue_created' && op.createdIssueNumber) {
+        if (
+          (op.creationStage === 'issue_created' || op.creationStage === 'applying_final_state') &&
+          op.createdIssueNumber
+        ) {
           await db.outbox.update(op.id, {
             state: 'pending',
             requestStarted: false,
@@ -253,7 +321,14 @@ export class OutboxProcessor {
       this.retryTimer = null;
     }
 
-    const failedOps = await db.outbox.where('state').equals('failed').toArray();
+    const activeAccountId = this.getActiveAccountId();
+    if (!activeAccountId) return;
+
+    const failedOps = await db.outbox
+      .where('accountId')
+      .equals(activeAccountId)
+      .and((op) => op.state === 'failed')
+      .toArray();
 
     const futureOps = failedOps.filter(
       (op) => op.nextAttemptAt && new Date(op.nextAttemptAt).getTime() > Date.now(),
@@ -275,20 +350,62 @@ export class OutboxProcessor {
     }, delay);
   }
 
-  private async execute(api: GitHubApi, operation: OutboxOperation): Promise<boolean> {
+  private async claimAndExecute(
+    api: GitHubApi,
+    operationId: string,
+    activeAccountId: string,
+  ): Promise<boolean> {
+    let claimedOperation: OutboxOperation | null = null;
     const now = new Date();
     const leaseExpiresAt = new Date(now.getTime() + 30_000).toISOString();
-    const attemptCount = operation.attemptCount + 1;
 
-    await db.outbox.update(operation.id, {
-      state: 'syncing',
-      requestStarted: true,
-      attemptCount,
-      claimedAt: now.toISOString(),
-      leaseOwner: this.instanceId,
-      leaseExpiresAt,
-      updatedAt: now.toISOString(),
+    await db.transaction('rw', db.outbox, async () => {
+      const op = await db.outbox.get(operationId);
+      if (!op) return;
+      if (op.accountId !== activeAccountId) return;
+      if (op.state !== 'pending' && op.state !== 'failed') return;
+      if (
+        op.state === 'failed' &&
+        op.nextAttemptAt &&
+        new Date(op.nextAttemptAt).getTime() > Date.now()
+      ) {
+        return;
+      }
+      const isLeaseActive =
+        op.leaseExpiresAt &&
+        new Date(op.leaseExpiresAt).getTime() > Date.now() &&
+        op.leaseOwner !== this.instanceId;
+      if (isLeaseActive) return;
+
+      const attemptCount = op.attemptCount + 1;
+      const updated: Partial<OutboxOperation> = {
+        state: 'syncing',
+        requestStarted: true,
+        attemptCount,
+        claimedAt: now.toISOString(),
+        leaseOwner: this.instanceId,
+        leaseExpiresAt,
+        updatedAt: now.toISOString(),
+      };
+      await db.outbox.update(op.id, updated);
+      claimedOperation = { ...op, ...updated, attemptCount };
     });
+
+    if (!claimedOperation) return true;
+
+    return this.execute(api, claimedOperation);
+  }
+
+  private async execute(api: GitHubApi, operation: OutboxOperation): Promise<boolean> {
+    assertAccountId(operation.accountId);
+    let heartbeatInterval: ReturnType<typeof setInterval> | null = setInterval(() => {
+      void db.outbox
+        .update(operation.id, {
+          leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
+          updatedAt: new Date().toISOString(),
+        })
+        .catch(() => {});
+    }, 10_000);
 
     try {
       if (operation.type === 'create_issue' || operation.type === 'convert_note') {
@@ -307,13 +424,12 @@ export class OutboxProcessor {
 
           issueNumber = newIssue.issueNumber;
           nodeId = newIssue.nodeId;
-          createdIssue = newIssue;
+          createdIssue = { ...newIssue, accountId: operation.accountId };
 
           operation.creationStage = 'issue_created';
           operation.createdIssueNumber = issueNumber;
           operation.createdIssueNodeId = nodeId;
 
-          // СРАЗУ сохранить номер и stage в outbox
           await db.outbox.update(operation.id, {
             creationStage: 'issue_created',
             createdIssueNumber: issueNumber,
@@ -331,15 +447,16 @@ export class OutboxProcessor {
             updatedAt: new Date().toISOString(),
           });
 
-          createdIssue = await api.updateIssue(operation.repositoryFullName, issueNumber, {
+          const updatedIssue = await api.updateIssue(operation.repositoryFullName, issueNumber, {
             state: 'closed',
           });
+          createdIssue = { ...updatedIssue, accountId: operation.accountId };
         } else if (!createdIssue) {
-          // Если POST был выполнен ранее, но PATCH не требовался — прочитать актуальный Issue
+          // Прочитать актуальный Issue если POST был сделан ранее
           const fetched = await api.getIssues(operation.repositoryFullName);
           const found = fetched.find((i) => i.issueNumber === issueNumber);
           if (found) {
-            createdIssue = found;
+            createdIssue = { ...found, accountId: operation.accountId };
           } else {
             createdIssue = {
               repositoryFullName: operation.repositoryFullName,
@@ -359,14 +476,17 @@ export class OutboxProcessor {
               syncState: 'synced',
               statusConflict: false,
               priorityConflict: false,
+              accountId: operation.accountId,
             };
           }
         }
 
-        const finalIssue = createdIssue;
+        const finalIssue: GitHubIssue = {
+          ...createdIssue,
+          accountId: assertAccountId(operation.accountId),
+        };
         const clientLocalId = operation.payload.clientLocalId as string | undefined;
 
-        // Завершающая атомарная транзакция
         await db.transaction(
           'rw',
           db.githubIssuesCache,
@@ -375,7 +495,10 @@ export class OutboxProcessor {
           db.tabs,
           async () => {
             if (clientLocalId) {
-              await db.githubIssuesCache.where('clientLocalId').equals(clientLocalId).delete();
+              await db.githubIssuesCache
+                .where('[accountId+repositoryFullName+issueNumber]')
+                .equals([operation.accountId, operation.repositoryFullName, -1])
+                .delete();
             }
 
             await db.githubIssuesCache.put(finalIssue);
@@ -384,22 +507,23 @@ export class OutboxProcessor {
               await db.localNotes.delete(operation.sourceNoteId);
             }
 
-            // Обновить вкладки с временным номером/clientLocalId на настоящий issueNumber
-            const allTabs = await db.tabs.toArray();
+            const accountTabs = await db.tabs
+              .where('accountId')
+              .equals(operation.accountId)
+              .toArray();
 
-            for (const tab of allTabs) {
+            for (const tab of accountTabs) {
               if (
-                tab.entity.kind === 'issue' &&
-                tab.entity.repositoryFullName === finalIssue.repositoryFullName
+                tab.entity.kind === 'pending-issue' &&
+                tab.entity.clientLocalId === clientLocalId
               ) {
-                if (
-                  tab.entity.issueNumber < 0 ||
-                  (clientLocalId && String(tab.entity.issueNumber) === clientLocalId)
-                ) {
-                  tab.entity.issueNumber = finalIssue.issueNumber;
-                  tab.title = `${finalIssue.repositoryFullName.split('/')[1]} #${finalIssue.issueNumber}`;
-                  await db.tabs.put(tab);
-                }
+                tab.entity = {
+                  kind: 'issue',
+                  repositoryFullName: finalIssue.repositoryFullName,
+                  issueNumber: finalIssue.issueNumber,
+                };
+                tab.title = `${finalIssue.repositoryFullName.split('/')[1]} #${finalIssue.issueNumber}`;
+                await db.tabs.put(tab);
               }
             }
 
@@ -420,8 +544,13 @@ export class OutboxProcessor {
           state: operation.payload.state as 'open' | 'closed' | undefined,
         });
 
+        const finalIssue: GitHubIssue = {
+          ...issue,
+          accountId: assertAccountId(operation.accountId),
+        };
+
         await db.transaction('rw', db.githubIssuesCache, db.outbox, async () => {
-          await db.githubIssuesCache.put(issue);
+          await db.githubIssuesCache.put(finalIssue);
           await db.outbox.delete(operation.id);
         });
       } else if (operation.type === 'close_and_copy') {
@@ -429,19 +558,24 @@ export class OutboxProcessor {
         const issue = await api.updateIssue(operation.repositoryFullName, issueNumber, {
           state: 'closed',
         });
+        const finalIssue: GitHubIssue = {
+          ...issue,
+          accountId: assertAccountId(operation.accountId),
+        };
 
-        const rawNote = operation.payload.note as any;
+        const rawNote = operation.payload.note as Partial<GitHubIssue> & Record<string, unknown>;
         const note = createLocalNote({
           title: String(rawNote.title || issue.title),
           description: String(rawNote.description || issue.body),
           status: 'question',
           repositoryFullName: operation.repositoryFullName,
-          localTags: Array.isArray(rawNote.localTags) ? rawNote.localTags : [],
-          checklist: Array.isArray(rawNote.checklist) ? rawNote.checklist : [],
+          localTags: Array.isArray(rawNote.localTags) ? (rawNote.localTags as string[]) : [],
+          checklist: Array.isArray(rawNote.checklist) ? (rawNote.checklist as any) : [],
         });
+        note.accountId = operation.accountId;
 
         await db.transaction('rw', db.githubIssuesCache, db.localNotes, db.outbox, async () => {
-          await db.githubIssuesCache.put(issue);
+          await db.githubIssuesCache.put(finalIssue);
           await db.localNotes.add(note);
           await db.outbox.delete(operation.id);
         });
@@ -504,7 +638,6 @@ export class OutboxProcessor {
       }
 
       const isCreate = operation.type === 'create_issue' || operation.type === 'convert_note';
-      // Если POST завершился ошибкой и issueNumber ещё не создан -> перевести в attention
       if (
         isCreate &&
         (!operation.createdIssueNumber || operation.creationStage === 'not_started')
@@ -517,19 +650,25 @@ export class OutboxProcessor {
         return true;
       }
 
-      // Для update или повтора PATCH в условном создании: exponential backoff до maxSyncAttempts, затем exhausted
-      const exhausted = attemptCount >= APP_CONFIG.maxSyncAttempts;
+      const exhausted = operation.attemptCount >= APP_CONFIG.maxSyncAttempts;
       await db.outbox.update(operation.id, {
         state: exhausted ? 'exhausted' : 'failed',
         nextAttemptAt: exhausted
           ? undefined
-          : new Date(Date.now() + Math.min(2 ** attemptCount * 1000, 30_000)).toISOString(),
+          : new Date(
+              Date.now() + Math.min(2 ** operation.attemptCount * 1000, 30_000),
+            ).toISOString(),
         lastError: exhausted
-          ? `Исчерпаны попытки (${attemptCount}). Требуется ручной повтор. Последняя ошибка: ${message}`
+          ? `Исчерпаны попытки (${operation.attemptCount}). Требуется ручной повтор. Последняя ошибка: ${message}`
           : message,
         updatedAt: new Date().toISOString(),
       });
       return true;
+    } finally {
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+      }
     }
   }
 }

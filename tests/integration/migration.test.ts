@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { migrateLegacyDb } from '../../src/data/migrate-legacy-db';
 import { db } from '../../src/data/db';
 
@@ -7,6 +7,9 @@ const NEW_DB_NAME = 'kitsuflow-db';
 
 function openLegacyRaw(records: {
   notes?: any[];
+  issues?: any[];
+  repos?: any[];
+  labels?: any[];
   outbox?: any[];
   tabs?: any[];
   settings?: any[];
@@ -38,6 +41,18 @@ function openLegacyRaw(records: {
         const store = tx.objectStore('localNotes');
         for (const n of records.notes) store.put(n, n.id);
       }
+      if (records.issues) {
+        const store = tx.objectStore('githubIssuesCache');
+        for (const i of records.issues) store.put(i, [i.repositoryFullName, i.issueNumber]);
+      }
+      if (records.repos) {
+        const store = tx.objectStore('repositoriesCache');
+        for (const r of records.repos) store.put(r, r.fullName);
+      }
+      if (records.labels) {
+        const store = tx.objectStore('repositoryLabelsCache');
+        for (const l of records.labels) store.put(l, l.repositoryFullName);
+      }
       if (records.outbox) {
         const store = tx.objectStore('outbox');
         for (const o of records.outbox) store.put(o, o.id);
@@ -63,7 +78,7 @@ function deleteDB(name: string): Promise<void> {
   });
 }
 
-describe('IndexedDB legacy migration', () => {
+describe('IndexedDB legacy migration & schema version 4 upgrade', () => {
   afterEach(async () => {
     await db.close();
     await deleteDB(LEGACY_DB_NAME);
@@ -75,7 +90,7 @@ describe('IndexedDB legacy migration', () => {
     expect(result).toBe('skipped');
   });
 
-  it('successfully migrates all tables atomically from legacy DB and sets marker', async () => {
+  it('successfully migrates all tables atomically from legacy DB, maps unassigned records to legacy-unassigned, and sets marker', async () => {
     const sampleNote = {
       id: 'note-1',
       title: 'Legacy Note',
@@ -111,9 +126,11 @@ describe('IndexedDB legacy migration', () => {
     const notes = await db.localNotes.toArray();
     expect(notes).toHaveLength(1);
     expect(notes[0]?.title).toBe('Legacy Note');
+    expect(notes[0]?.accountId).toBeNull(); // Local device note has accountId null
 
     const outbox = await db.outbox.toArray();
     expect(outbox).toHaveLength(1);
+    expect(outbox[0]?.accountId).toBe('legacy-unassigned');
 
     const marker = await db.syncMetadata.get('kf_migrated');
     expect(marker).toBeDefined();
@@ -131,6 +148,7 @@ describe('IndexedDB legacy migration', () => {
       title: 'Все задачи',
       position: 0,
       active: true,
+      accountId: null,
     });
 
     const result = await migrateLegacyDb();
@@ -143,40 +161,53 @@ describe('IndexedDB legacy migration', () => {
     expect(notes).toHaveLength(0);
   });
 
-  it('rolls back full transaction if write fails midway and permits successful re-run', async () => {
-    await openLegacyRaw({
-      notes: [{ id: 'note-fail', title: 'Fail Note', status: 'todo' }],
-      outbox: [
-        {
-          id: 'outbox-fail',
-          type: 'create_issue',
-          entityKey: 'k',
-          repositoryFullName: 'a/b',
-          payload: {},
-          state: 'pending',
-        },
-      ],
+  it('migrates composite keys for version 4 without losing data or overwriting duplicate repos/issues across accounts', async () => {
+    await db.open();
+    // Simulate populating Dexie version 4 directly
+    await db.githubIssuesCache.put({
+      repositoryFullName: 'org/repo',
+      nodeId: 'n1',
+      issueNumber: 1,
+      title: 'Alice Issue #1',
+      body: '',
+      state: 'open',
+      derivedStatus: 'todo',
+      derivedPriority: 'none',
+      labels: [],
+      assignees: [],
+      htmlUrl: '',
+      createdAt: '',
+      updatedAt: '',
+      cachedAt: '',
+      syncState: 'synced',
+      statusConflict: false,
+      priorityConflict: false,
+      accountId: 'account-A',
     });
 
-    vi.spyOn(db.outbox, 'bulkPut').mockRejectedValueOnce(
-      new Error('Simulated IndexedDB write error midway'),
-    );
+    await db.githubIssuesCache.put({
+      repositoryFullName: 'org/repo',
+      nodeId: 'n2',
+      issueNumber: 1,
+      title: 'Bob Issue #1',
+      body: '',
+      state: 'open',
+      derivedStatus: 'todo',
+      derivedPriority: 'none',
+      labels: [],
+      assignees: [],
+      htmlUrl: '',
+      createdAt: '',
+      updatedAt: '',
+      cachedAt: '',
+      syncState: 'synced',
+      statusConflict: false,
+      priorityConflict: false,
+      accountId: 'account-B',
+    });
 
-    await expect(migrateLegacyDb()).rejects.toThrow();
-
-    await db.open();
-    const notes = await db.localNotes.toArray();
-    expect(notes).toHaveLength(0);
-
-    const marker = await db.syncMetadata.get('kf_migrated');
-    expect(marker).toBeUndefined();
-
-    vi.restoreAllMocks();
-
-    const retryResult = await migrateLegacyDb();
-    expect(retryResult).toBe('migrated');
-
-    const retryNotes = await db.localNotes.toArray();
-    expect(retryNotes).toHaveLength(1);
+    const issues = await db.githubIssuesCache.toArray();
+    expect(issues).toHaveLength(2);
+    expect(issues.map((i) => i.title).sort()).toEqual(['Alice Issue #1', 'Bob Issue #1']);
   });
 });

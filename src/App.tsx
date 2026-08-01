@@ -31,6 +31,7 @@ export function App() {
   const setRepositoryPickerOpen = useAppStore((state) => state.setRepositoryPickerOpen);
   const setConversionNoteId = useAppStore((state) => state.setConversionNoteId);
   const logout = useAppStore((state) => state.logout);
+  const updateNote = useAppStore((state) => state.updateNote);
   const requestConversion = useAppStore((state) => state.requestConversion);
   const changeIssueStatus = useAppStore((state) => state.changeIssueStatus);
   const moveIssue = useAppStore((state) => state.moveIssue);
@@ -103,11 +104,18 @@ export function App() {
           priority: 'none',
         });
       } else if (target.type === 'status') {
-        requestConversion(note.id, {
-          repositoryFullName: target.repositoryFullName,
-          status: target.status as TaskStatus,
-          priority: 'none',
-        });
+        if (target.status === 'question') {
+          void updateNote(note.id, {
+            repositoryFullName: target.repositoryFullName,
+            status: 'question',
+          });
+        } else {
+          requestConversion(note.id, {
+            repositoryFullName: target.repositoryFullName,
+            status: target.status as TaskStatus,
+            priority: 'none',
+          });
+        }
       } else if (target.type === 'priority') {
         requestConversion(note.id, {
           repositoryFullName: target.repositoryFullName,

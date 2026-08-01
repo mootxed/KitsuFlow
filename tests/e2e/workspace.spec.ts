@@ -126,10 +126,10 @@ test('opening quick create from repository view pre-selects current repository',
   await page.getByText('acme/repo', { exact: true }).click();
   await page.getByLabel('Выбор репозиториев').getByRole('button', { name: 'Готово' }).click();
 
-  await page.getByRole('button', { name: /repo/ }).first().click();
+  await page.getByRole('button', { name: 'acme/repo' }).click();
   await expect(page.getByRole('heading', { name: 'acme/repo' })).toBeVisible();
 
-  await page.getByRole('button', { name: 'Issue' }).click();
+  await page.getByRole('button', { name: /Issue/ }).click();
   await expect(page.getByLabel('Быстрое создание')).toBeVisible();
 
   await expect(page.getByLabel('Репозиторий')).toHaveValue('acme/repo');

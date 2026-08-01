@@ -120,7 +120,35 @@ export async function migrateLegacyDb(): Promise<MigrationResult> {
       for (const [tableName, records] of legacyDataMap.entries()) {
         const table = (db as Record<string, any>)[tableName];
         if (table && typeof table.bulkPut === 'function') {
-          await table.bulkPut(records);
+          const normalizedRecords = records.map((rec: any) => {
+            if (tableName === 'localNotes') {
+              if (rec.repositoryFullName && !rec.accountId) {
+                return { ...rec, accountId: 'legacy-unassigned' };
+              }
+              if (!rec.repositoryFullName) {
+                return { ...rec, accountId: null };
+              }
+            }
+            if (
+              [
+                'githubIssuesCache',
+                'repositoriesCache',
+                'repositoryLabelsCache',
+                'outbox',
+              ].includes(tableName)
+            ) {
+              if (!rec.accountId) {
+                return { ...rec, accountId: 'legacy-unassigned' };
+              }
+            }
+            if (tableName === 'tabs') {
+              if (rec.accountId === undefined) {
+                return { ...rec, accountId: null };
+              }
+            }
+            return rec;
+          });
+          await table.bulkPut(normalizedRecords);
         }
       }
 

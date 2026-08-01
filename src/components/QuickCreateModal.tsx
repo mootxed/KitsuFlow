@@ -40,17 +40,25 @@ export function QuickCreateModal() {
   useEffect(() => {
     if (open) {
       window.setTimeout(() => titleRef.current?.focus(), 0);
-      if (createDialog.initialRepositoryFullName) {
-        setRepository(createDialog.initialRepositoryFullName);
-      }
-      if (createDialog.initialStatus) {
-        setStatus(createDialog.initialStatus);
-      }
-      if (createDialog.initialPriority) {
-        setPriority(createDialog.initialPriority);
-      }
+      setTitle('');
+      setDescription('');
+      setRepository(createDialog.initialRepositoryFullName ?? '');
+      setStatus(createDialog.initialStatus ?? 'todo');
+      setPriority(createDialog.initialPriority ?? 'none');
+      setTags('');
+      setSelectedLabels([]);
+      setAvailableLabels([]);
+      setChecklist('');
+      setAssignee('');
+      setAvailableAssignees([]);
+      setLoadingLabels(false);
     }
-  }, [open, createDialog]);
+  }, [
+    open,
+    createDialog.initialRepositoryFullName,
+    createDialog.initialStatus,
+    createDialog.initialPriority,
+  ]);
 
   useEffect(() => {
     if (!repository && status === 'question') setStatus('todo');

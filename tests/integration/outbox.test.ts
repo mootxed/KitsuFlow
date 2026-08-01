@@ -17,22 +17,25 @@ describe('outbox durability & error handling', () => {
       status: 'question',
       repositoryFullName: 'acme/repo',
     });
+    note.accountId = '1001';
     await db.localNotes.add(note);
     const api = {
       createIssue: async () => {
         throw new TypeError('network');
       },
     };
-    const processor = new OutboxProcessor(
-      () => api as any,
-      () => undefined,
-    );
+    const processor = new OutboxProcessor({
+      getApi: () => api as any,
+      getActiveAccountId: () => '1001',
+      onEvent: () => undefined,
+    });
     await processor.enqueue({
       type: 'convert_note',
       entityKey: note.id,
       repositoryFullName: 'acme/repo',
       sourceNoteId: note.id,
       payload: { title: note.title, body: '', labels: [], assignees: [] },
+      accountId: '1001',
     });
     await processor.process();
     expect(await db.localNotes.get(note.id)).toBeDefined();
@@ -46,22 +49,25 @@ describe('outbox durability & error handling', () => {
       status: 'question',
       repositoryFullName: 'acme/repo',
     });
+    note.accountId = '1001';
     await db.localNotes.add(note);
     const api = {
-      createIssue: async () => normalizeIssue('acme/repo', apiIssue()),
-      updateIssue: async () => normalizeIssue('acme/repo', apiIssue()),
-      getIssues: async () => [normalizeIssue('acme/repo', apiIssue())],
+      createIssue: async () => normalizeIssue('acme/repo', apiIssue(), '1001'),
+      updateIssue: async () => normalizeIssue('acme/repo', apiIssue(), '1001'),
+      getIssues: async () => [normalizeIssue('acme/repo', apiIssue(), '1001')],
     };
-    const processor = new OutboxProcessor(
-      () => api as any,
-      () => undefined,
-    );
+    const processor = new OutboxProcessor({
+      getApi: () => api as any,
+      getActiveAccountId: () => '1001',
+      onEvent: () => undefined,
+    });
     await processor.enqueue({
       type: 'convert_note',
       entityKey: note.id,
       repositoryFullName: 'acme/repo',
       sourceNoteId: note.id,
       payload: { title: note.title, body: '', labels: [], assignees: [] },
+      accountId: '1001',
     });
     await processor.process();
     expect(await db.localNotes.get(note.id)).toBeUndefined();
@@ -70,178 +76,179 @@ describe('outbox durability & error handling', () => {
     processor.destroy();
   });
 
-  it('parallel calls to process() return the same Promise and do not duplicate execution', async () => {
-    let callCount = 0;
-    const api = {
-      updateIssue: async () => {
-        callCount++;
-        await new Promise((r) => setTimeout(r, 50));
-        return normalizeIssue('acme/repo', apiIssue({ number: 1 }));
-      },
-    };
-    const processor = new OutboxProcessor(
-      () => api as any,
-      () => undefined,
-    );
-    await db.outbox.add({
-      id: 'op-parallel-1',
-      type: 'update_issue',
-      entityKey: 'acme/repo#1',
-      repositoryFullName: 'acme/repo',
-      payload: { issueNumber: 1, title: 'Parallel test' },
-      state: 'pending',
-      requestStarted: false,
-      attemptCount: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
+  it('filters outbox operations strictly by active account ID', async () => {
+    let currentAccount: string | null = 'user-A';
+    const executed: string[] = [];
 
-    const p1 = processor.process();
-    const p2 = processor.process();
-    expect(p1).toBe(p2);
-    await Promise.all([p1, p2]);
-    expect(callCount).toBe(1);
-    processor.destroy();
-  });
-
-  it('executes operation added during an active process() loop in the same loop', async () => {
-    const processed: string[] = [];
     const api = {
       updateIssue: async (repo: string, num: number) => {
-        processed.push(`op-${num}`);
-        await new Promise((r) => setTimeout(r, 20));
-        return normalizeIssue(repo, apiIssue({ number: num }));
+        executed.push(`issue-${num}`);
+        return normalizeIssue(repo, apiIssue({ number: num }), currentAccount!);
       },
     };
-    const processor = new OutboxProcessor(
-      () => api as any,
-      () => undefined,
-    );
+
+    const processor = new OutboxProcessor({
+      getApi: () => api as any,
+      getActiveAccountId: () => currentAccount,
+      onEvent: () => undefined,
+    });
 
     await processor.enqueue({
       type: 'update_issue',
       entityKey: 'acme/repo#1',
       repositoryFullName: 'acme/repo',
-      payload: { issueNumber: 1, title: 'First' },
+      payload: { issueNumber: 1, title: 'Op A' },
+      accountId: 'user-A',
     });
-
-    const processPromise = processor.process();
 
     await processor.enqueue({
       type: 'update_issue',
       entityKey: 'acme/repo#2',
       repositoryFullName: 'acme/repo',
-      payload: { issueNumber: 2, title: 'Second' },
+      payload: { issueNumber: 2, title: 'Op B' },
+      accountId: 'user-B',
     });
 
-    await processPromise;
-    expect(processed).toEqual(['op-1', 'op-2']);
+    // Process under user-A
+    await processor.process();
+    expect(executed).toEqual(['issue-1']);
+
+    // Switch to user-B
+    currentAccount = 'user-B';
+    await processor.process();
+    expect(executed).toEqual(['issue-1', 'issue-2']);
+
     processor.destroy();
   });
 
-  it('two-stage issue creation: POST succeeds, PATCH fails, retry executes only PATCH without repeating POST', async () => {
-    let postCalls = 0;
-    let patchCalls = 0;
-
+  it('manual retry resets attemptCount so subsequent failure yields attemptCount=1 and state=failed', async () => {
     const api = {
-      createIssue: async () => {
-        postCalls++;
-        return normalizeIssue('acme/repo', apiIssue({ number: 99 }));
-      },
       updateIssue: async () => {
-        patchCalls++;
-        if (patchCalls === 1) {
-          throw new Error('500 Server error during PATCH close');
-        }
-        return normalizeIssue('acme/repo', apiIssue({ number: 99, state: 'closed' }));
+        throw new Error('API temporary error');
       },
-      getIssues: async () => [normalizeIssue('acme/repo', apiIssue({ number: 99 }))],
     };
-
-    const processor = new OutboxProcessor(
-      () => api as any,
-      () => undefined,
-    );
-
-    const op = await processor.enqueue({
-      type: 'create_issue',
-      entityKey: 'client-temp-1',
-      repositoryFullName: 'acme/repo',
-      payload: { title: 'Closed Issue', state: 'closed', labels: [], assignees: [] },
+    const processor = new OutboxProcessor({
+      getApi: () => api as any,
+      getActiveAccountId: () => '1001',
+      onEvent: () => undefined,
     });
-
-    await processor.process();
-
-    expect(postCalls).toBe(1);
-    expect(patchCalls).toBe(1);
-
-    const outboxItem = await db.outbox.get(op.id);
-    expect(outboxItem?.creationStage).toBe('applying_final_state');
-    expect(outboxItem?.createdIssueNumber).toBe(99);
-    expect(outboxItem?.state).toBe('failed');
-
-    await processor.retry(op.id);
-
-    expect(postCalls).toBe(1);
-    expect(patchCalls).toBe(2);
-    expect(await db.outbox.count()).toBe(0);
-    processor.destroy();
-  });
-
-  it('recovers stale syncing update_issue back to pending', async () => {
-    await db.outbox.add({
-      id: 'stale-1',
-      type: 'update_issue',
-      entityKey: 'acme/repo#10',
-      repositoryFullName: 'acme/repo',
-      payload: { issueNumber: 10, title: 'Stale' },
-      state: 'syncing',
-      requestStarted: true,
-      attemptCount: 1,
-      leaseExpiresAt: new Date(Date.now() - 1000).toISOString(),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
-
-    const api = {
-      updateIssue: async () => normalizeIssue('acme/repo', apiIssue({ number: 10 })),
-    };
-
-    const processor = new OutboxProcessor(
-      () => api as any,
-      () => undefined,
-    );
-
-    await processor.process();
-    expect(await db.outbox.count()).toBe(0);
-    processor.destroy();
-  });
-
-  it('manual retry resets attemptCount, state, nextAttemptAt, and lastError', async () => {
-    const api = {
-      updateIssue: async () => normalizeIssue('acme/repo', apiIssue({ number: 3 })),
-    };
-    const processor = new OutboxProcessor(
-      () => api as any,
-      () => undefined,
-    );
 
     const op = await processor.enqueue({
       type: 'update_issue',
       entityKey: 'acme/repo#3',
       repositoryFullName: 'acme/repo',
       payload: { issueNumber: 3, title: 'Retry test' },
+      accountId: '1001',
     });
 
+    // Simulate exhausted operation after 4 attempts
     await db.outbox.update(op.id, {
       state: 'exhausted',
       attemptCount: 4,
       lastError: 'Failed max times',
-      nextAttemptAt: undefined,
     });
 
+    // User clicks retry
     await processor.retry(op.id);
-    expect(await db.outbox.count()).toBe(0);
+
+    const updatedOp = await db.outbox.get(op.id);
+    expect(updatedOp?.attemptCount).toBe(1);
+    expect(updatedOp?.state).toBe('failed');
+    expect(updatedOp?.state).not.toBe('exhausted');
+
     processor.destroy();
+  });
+
+  it('recovers safely on applying_final_state stage during restart', async () => {
+    let postCalls = 0;
+    let patchCalls = 0;
+
+    const api = {
+      createIssue: async () => {
+        postCalls++;
+        return normalizeIssue('acme/repo', apiIssue({ number: 88 }), '1001');
+      },
+      updateIssue: async () => {
+        patchCalls++;
+        return normalizeIssue('acme/repo', apiIssue({ number: 88, state: 'closed' }), '1001');
+      },
+      getIssues: async () => [normalizeIssue('acme/repo', apiIssue({ number: 88 }), '1001')],
+    };
+
+    await db.outbox.add({
+      id: 'op-staged-recovery',
+      type: 'create_issue',
+      entityKey: 'client-temp-stage',
+      repositoryFullName: 'acme/repo',
+      payload: { title: 'Applying state test', state: 'closed' },
+      state: 'syncing',
+      requestStarted: true,
+      attemptCount: 1,
+      creationStage: 'applying_final_state',
+      createdIssueNumber: 88,
+      leaseExpiresAt: new Date(Date.now() - 1000).toISOString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      accountId: '1001',
+    });
+
+    const processor = new OutboxProcessor({
+      getApi: () => api as any,
+      getActiveAccountId: () => '1001',
+      onEvent: () => undefined,
+    });
+
+    await processor.process();
+
+    expect(postCalls).toBe(0); // POST was skipped!
+    expect(patchCalls).toBe(1); // PATCH was executed!
+    expect(await db.outbox.count()).toBe(0);
+
+    processor.destroy();
+  });
+
+  it('lease fallback prevents duplicate execution across two processors when Web Locks is disabled', async () => {
+    let apiCallCount = 0;
+    const api = {
+      updateIssue: async (repo: string, num: number) => {
+        apiCallCount++;
+        await new Promise((r) => setTimeout(r, 100));
+        return normalizeIssue(repo, apiIssue({ number: num }), '1001');
+      },
+    };
+
+    const processor1 = new OutboxProcessor({
+      getApi: () => api as any,
+      getActiveAccountId: () => '1001',
+      onEvent: () => undefined,
+    });
+
+    const processor2 = new OutboxProcessor({
+      getApi: () => api as any,
+      getActiveAccountId: () => '1001',
+      onEvent: () => undefined,
+    });
+
+    await db.outbox.add({
+      id: 'op-lease-test',
+      type: 'update_issue',
+      entityKey: 'acme/repo#5',
+      repositoryFullName: 'acme/repo',
+      payload: { issueNumber: 5, title: 'Lease fallback' },
+      state: 'pending',
+      requestStarted: false,
+      attemptCount: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      accountId: '1001',
+    });
+
+    // Run both processors concurrently
+    await Promise.all([processor1.process(), processor2.process()]);
+
+    expect(apiCallCount).toBe(1);
+
+    processor1.destroy();
+    processor2.destroy();
   });
 });

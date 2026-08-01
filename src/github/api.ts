@@ -61,6 +61,7 @@ export class GitHubApi {
       permissions: { pull: Boolean(repo.permissions?.pull), push: Boolean(repo.permissions?.push) },
       pinned: false,
       updatedAt: new Date().toISOString(),
+      accountId: '',
     }));
   }
 

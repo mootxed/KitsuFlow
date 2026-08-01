@@ -33,7 +33,7 @@ export function ConversionModal() {
   const [loadingLabels, setLoadingLabels] = useState(false);
 
   useEffect(() => {
-    if (note) {
+    if (noteId && note) {
       const initialRepo =
         conversionDialog.repositoryFullName ||
         note.repositoryFullName ||
@@ -50,8 +50,17 @@ export function ConversionModal() {
       } else {
         setPriority('none');
       }
+      setSelectedLabels([]);
+      setAssignee('');
     }
-  }, [note, conversionDialog, repositories]);
+  }, [
+    noteId,
+    note,
+    conversionDialog.repositoryFullName,
+    conversionDialog.status,
+    conversionDialog.priority,
+    repositories,
+  ]);
 
   useEffect(() => {
     let active = true;

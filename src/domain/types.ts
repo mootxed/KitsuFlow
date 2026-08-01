@@ -70,7 +70,7 @@ export interface GitHubIssue {
   syncState: SyncState;
   statusConflict: boolean;
   priorityConflict: boolean;
-  accountId?: string | undefined;
+  accountId: string;
 }
 
 export interface Repository {
@@ -83,20 +83,28 @@ export interface Repository {
   permissions: { pull: boolean; push: boolean };
   pinned: boolean;
   updatedAt: string;
-  accountId?: string | undefined;
+  accountId: string;
 }
 
 export interface RepositoryLabelsCache {
   repositoryFullName: string;
   labels: IssueLabel[];
   cachedAt: string;
-  accountId?: string | undefined;
+  accountId: string;
+}
+
+export interface RepositoryAssigneesCache {
+  repositoryFullName: string;
+  assignees: string[];
+  cachedAt: string;
+  accountId: string;
 }
 
 export type TabEntity =
   | { kind: 'all' }
   | { kind: 'repository'; repositoryFullName: string }
   | { kind: 'local-note'; id: string }
+  | { kind: 'pending-issue'; repositoryFullName: string; clientLocalId: string }
   | { kind: 'issue'; repositoryFullName: string; issueNumber: number };
 
 export interface WorkspaceTab {
@@ -105,7 +113,7 @@ export interface WorkspaceTab {
   title: string;
   position: number;
   active: boolean;
-  accountId?: string | undefined;
+  accountId: string | null;
 }
 
 export type OutboxType = 'create_issue' | 'update_issue' | 'convert_note' | 'close_and_copy';
@@ -127,7 +135,7 @@ export interface OutboxOperation {
   lastError?: string | undefined;
   createdAt: string;
   updatedAt: string;
-  accountId?: string | undefined;
+  accountId: string;
   claimedAt?: string | undefined;
   leaseOwner?: string | undefined;
   leaseExpiresAt?: string | undefined;

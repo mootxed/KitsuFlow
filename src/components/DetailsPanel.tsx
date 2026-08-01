@@ -271,7 +271,12 @@ export function DetailsPanel() {
     if (!selected) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        const key = selected.kind === 'note' ? selected.id : selected.key;
+        const key =
+          selected.kind === 'note'
+            ? selected.id
+            : selected.kind === 'pending-issue'
+              ? selected.clientLocalId
+              : selected.key;
         setSelectedTask(null);
         window.setTimeout(
           () => document.querySelector<HTMLElement>(`[data-task-key="${key}"]`)?.focus(),
@@ -284,7 +289,12 @@ export function DetailsPanel() {
   }, [selected, setSelectedTask]);
   if (!selected) return null;
   const close = () => {
-    const key = selected.kind === 'note' ? selected.id : selected.key;
+    const key =
+      selected.kind === 'note'
+        ? selected.id
+        : selected.kind === 'pending-issue'
+          ? selected.clientLocalId
+          : selected.key;
     setSelectedTask(null);
     window.setTimeout(
       () => document.querySelector<HTMLElement>(`[data-task-key="${key}"]`)?.focus(),

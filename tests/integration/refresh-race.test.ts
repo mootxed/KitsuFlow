@@ -42,7 +42,9 @@ describe('Outbox and Refresh Issues Controlled Race Barriers', () => {
       },
     };
 
+    const user = { id: 1001, login: 'acme', name: 'ACME', avatarUrl: '' };
     useAppStore.setState({
+      user,
       api: mockApi as any,
       repositories: [
         {
@@ -55,6 +57,7 @@ describe('Outbox and Refresh Issues Controlled Race Barriers', () => {
           permissions: { pull: true, push: true },
           pinned: true,
           updatedAt: new Date().toISOString(),
+          accountId: '1001',
         },
       ],
     });
@@ -97,10 +100,11 @@ describe('Outbox and Refresh Issues Controlled Race Barriers', () => {
   });
 
   it('controlled barrier race: pending update fields are preserved during parallel refresh', async () => {
-    const existingIssue = normalizeIssue(
-      'acme/repo',
-      apiIssue({ number: 5, title: 'Original Title' }),
-    );
+    const user = { id: 1001, login: 'acme', name: 'ACME', avatarUrl: '' };
+    const existingIssue = {
+      ...normalizeIssue('acme/repo', apiIssue({ number: 5, title: 'Original Title' }), '1001'),
+      accountId: '1001',
+    };
     await db.githubIssuesCache.put(existingIssue);
 
     const barrier = createBarrier();
@@ -108,17 +112,18 @@ describe('Outbox and Refresh Issues Controlled Race Barriers', () => {
 
     const mockApi = {
       getIssues: async () => [
-        normalizeIssue('acme/repo', apiIssue({ number: 5, title: 'Original Title' })),
+        normalizeIssue('acme/repo', apiIssue({ number: 5, title: 'Original Title' }), '1001'),
       ],
       getLabels: async () => [],
       updateIssue: async () => {
         updateCalled = true;
         await barrier.promise;
-        return normalizeIssue('acme/repo', apiIssue({ number: 5, title: 'Updated Title' }));
+        return normalizeIssue('acme/repo', apiIssue({ number: 5, title: 'Updated Title' }), '1001');
       },
     };
 
     useAppStore.setState({
+      user,
       api: mockApi as any,
       issues: [existingIssue],
       repositories: [
@@ -132,6 +137,7 @@ describe('Outbox and Refresh Issues Controlled Race Barriers', () => {
           permissions: { pull: true, push: true },
           pinned: true,
           updatedAt: new Date().toISOString(),
+          accountId: '1001',
         },
       ],
     });

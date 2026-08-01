@@ -95,7 +95,18 @@ export function isPullRequest(issue: ApiIssue): boolean {
   return 'pull_request' in issue && Boolean(issue.pull_request);
 }
 
-export function normalizeIssue(repositoryFullName: string, issue: ApiIssue): GitHubIssue {
+export function assertAccountId(accountId: string | null | undefined): string {
+  if (!accountId || typeof accountId !== 'string' || accountId.trim() === '') {
+    throw new Error('Missing or invalid accountId for GitHub entity');
+  }
+  return accountId;
+}
+
+export function normalizeIssue(
+  repositoryFullName: string,
+  issue: ApiIssue,
+  accountId?: string,
+): GitHubIssue {
   const status = deriveStatus(issue);
   const priority = derivePriority(issue.labels);
   return {
@@ -124,6 +135,7 @@ export function normalizeIssue(repositoryFullName: string, issue: ApiIssue): Git
     syncState: status.conflict || priority.conflict ? 'conflict' : 'synced',
     statusConflict: status.conflict,
     priorityConflict: priority.conflict,
+    accountId: accountId!,
   };
 }
 
