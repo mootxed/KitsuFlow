@@ -67,7 +67,7 @@ test('local note converts to Issue and tabs restore', async ({ page }) => {
   await page.getByRole('button', { name: 'Выбрать репозитории' }).click();
   await page.getByText('acme/repo', { exact: true }).click();
   await page.getByLabel('Выбор репозиториев').getByRole('button', { name: 'Готово' }).click();
-  await expect(page.getByRole('button', { name: /repo/ })).toBeVisible();
+  await expect(page.locator('.repository-list button').first()).toBeVisible();
 
   await page.keyboard.press('c');
   await page.getByLabel('Название').fill('Draft the release notes');
@@ -87,7 +87,7 @@ test('local note converts to Issue and tabs restore', async ({ page }) => {
     .getByText('Draft the release notes')
     .locator('..')
     .getByRole('button', { name: 'Перетащить задачу' });
-  const target = page.getByRole('button', { name: /repo/ }).first();
+  const target = page.locator('.repository-list button').first();
   const sourceBox = await source.boundingBox();
   const targetBox = await target.boundingBox();
   expect(sourceBox).not.toBeNull();
@@ -104,7 +104,7 @@ test('local note converts to Issue and tabs restore', async ({ page }) => {
   await expect(page.getByRole('main').getByText('Draft the release notes')).toBeVisible();
 
   await page
-    .getByRole('button', { name: /repo/ })
+    .locator('.repository-list button')
     .first()
     .click({ modifiers: ['Shift'] });
   await expect(page.getByRole('tab', { name: /repo/ })).toBeVisible();
@@ -126,7 +126,7 @@ test('opening quick create from repository view pre-selects current repository',
   await page.getByText('acme/repo', { exact: true }).click();
   await page.getByLabel('Выбор репозиториев').getByRole('button', { name: 'Готово' }).click();
 
-  await page.getByRole('button', { name: /repo/ }).first().click();
+  await page.locator('.repository-list button').first().click();
   await expect(page.getByRole('heading', { name: 'acme/repo' })).toBeVisible();
 
   await page.getByRole('button', { name: /Issue/ }).click();
