@@ -348,7 +348,14 @@ describe('pending actions and note conversion lifecycle', () => {
   });
 
   it('double confirmConversion creates only one convert_note outbox entry', async () => {
-    const note = createLocalNote({ title: 'Convert me', description: '', status: 'question', repositoryFullName: 'acme/repo', localTags: [], checklist: [] });
+    const note = createLocalNote({
+      title: 'Convert me',
+      description: '',
+      status: 'question',
+      repositoryFullName: 'acme/repo',
+      localTags: [],
+      checklist: [],
+    });
     note.id = 'note-double-convert';
     note.accountId = '1001';
     await db.localNotes.put(note);
@@ -358,15 +365,28 @@ describe('pending actions and note conversion lifecycle', () => {
       notes: [note],
       repositories: [
         {
-          id: 1, installationId: 7, fullName: 'acme/repo', owner: 'acme', name: 'repo',
-          private: false, permissions: { pull: true, push: true }, pinned: true,
-          updatedAt: now, accountId: '1001',
+          id: 1,
+          installationId: 7,
+          fullName: 'acme/repo',
+          owner: 'acme',
+          name: 'repo',
+          private: false,
+          permissions: { pull: true, push: true },
+          pinned: true,
+          updatedAt: now,
+          accountId: '1001',
         },
       ],
       conversionDialog: { noteId: note.id },
     });
 
-    const draft = { repositoryFullName: 'acme/repo', status: 'todo' as const, priority: 'none' as const, labels: [], assignees: [] };
+    const draft = {
+      repositoryFullName: 'acme/repo',
+      status: 'todo' as const,
+      priority: 'none' as const,
+      labels: [],
+      assignees: [],
+    };
     // Первый вызов
     await useAppStore.getState().confirmConversion(draft);
     // Сбрасываем диалог и вызываем снова
@@ -379,7 +399,14 @@ describe('pending actions and note conversion lifecycle', () => {
   });
 
   it('deleteNote deletes the associated pending convert_note operation', async () => {
-    const note = createLocalNote({ title: 'Will be deleted', description: '', status: 'question', repositoryFullName: 'acme/repo', localTags: [], checklist: [] });
+    const note = createLocalNote({
+      title: 'Will be deleted',
+      description: '',
+      status: 'question',
+      repositoryFullName: 'acme/repo',
+      localTags: [],
+      checklist: [],
+    });
     note.id = 'note-to-delete';
     note.accountId = '1001';
     note.syncState = 'pending';
@@ -415,7 +442,14 @@ describe('pending actions and note conversion lifecycle', () => {
   });
 
   it('updateNote ignores updates while note is pending conversion', async () => {
-    const note = createLocalNote({ title: 'Original title', description: 'Original body', status: 'question', repositoryFullName: 'acme/repo', localTags: [], checklist: [] });
+    const note = createLocalNote({
+      title: 'Original title',
+      description: 'Original body',
+      status: 'question',
+      repositoryFullName: 'acme/repo',
+      localTags: [],
+      checklist: [],
+    });
     note.id = 'note-to-update';
     note.accountId = '1001';
     note.syncState = 'pending';
@@ -426,7 +460,13 @@ describe('pending actions and note conversion lifecycle', () => {
       entityKey: note.id,
       sourceNoteId: note.id,
       repositoryFullName: 'acme/repo',
-      payload: { title: 'Original title', body: 'Original body', labels: [], assignees: [], state: 'open' },
+      payload: {
+        title: 'Original title',
+        body: 'Original body',
+        labels: [],
+        assignees: [],
+        state: 'open',
+      },
       state: 'pending',
       requestStarted: false,
       attemptCount: 0,
@@ -449,4 +489,3 @@ describe('pending actions and note conversion lifecycle', () => {
     expect(updatedOp?.payload.title).toBe('Original title');
   });
 });
-

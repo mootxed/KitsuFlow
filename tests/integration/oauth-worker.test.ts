@@ -162,4 +162,3 @@ describe('OAuth Worker refresh lifecycle', () => {
     expect(kv.values.has(sessionId)).toBe(false);
   });
 });
-

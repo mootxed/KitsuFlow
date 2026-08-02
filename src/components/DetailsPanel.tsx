@@ -194,8 +194,8 @@ export function DetailsContent({
   }
   if (!issue) return null;
   const canWrite = Boolean(
-    repositories.find((repository) => repository.fullName === issue.repositoryFullName)
-      ?.permissions.push,
+    repositories.find((repository) => repository.fullName === issue.repositoryFullName)?.permissions
+      .push,
   );
   const save = () => void updateIssueFields(issue, { title: title.trim() || issue.title, body });
   return (

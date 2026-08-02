@@ -444,5 +444,3 @@ export async function clearLocalData(): Promise<void> {
     await Promise.all(db.tables.map((table) => table.clear()));
   });
 }
-
-

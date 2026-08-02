@@ -383,7 +383,9 @@ export const useAppStore = create<AppState>((set, get) => {
   const ensureRepositoryWritable = (repositoryFullName: string): boolean => {
     const repository = get().repositories.find((item) => item.fullName === repositoryFullName);
     if (!repository) {
-      set({ error: `Репозиторий ${repositoryFullName} больше недоступен или не найден в текущей сессии.` });
+      set({
+        error: `Репозиторий ${repositoryFullName} больше недоступен или не найден в текущей сессии.`,
+      });
       return false;
     }
     if (repository.permissions.push) return true;
@@ -1144,11 +1146,7 @@ export const useAppStore = create<AppState>((set, get) => {
           const existingConvert = await db.outbox
             .where('entityKey')
             .equals(id)
-            .and(
-              (op) =>
-                op.type === 'convert_note' &&
-                op.accountId === activeAccountId,
-            )
+            .and((op) => op.type === 'convert_note' && op.accountId === activeAccountId)
             .last();
           if (existingConvert) {
             await db.outbox.update(existingConvert.id, {
@@ -1415,11 +1413,7 @@ export const useAppStore = create<AppState>((set, get) => {
       const existingConvert = await db.outbox
         .where('entityKey')
         .equals(note.id)
-        .and(
-          (op) =>
-            op.type === 'convert_note' &&
-            op.accountId === accountId,
-        )
+        .and((op) => op.type === 'convert_note' && op.accountId === accountId)
         .last();
 
       if (existingConvert) {

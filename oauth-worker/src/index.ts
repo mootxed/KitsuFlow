@@ -183,14 +183,8 @@ export default {
           }
           // Временная ошибка (5xx, 429, сеть): сохраняем KV, предлагаем повторить
           const retryAfter =
-            response.status === 429
-              ? Number(response.headers.get('retry-after') || 60)
-              : 30;
-          return json(
-            origin,
-            { error: 'token_refresh_unavailable', retry_after: retryAfter },
-            503,
-          );
+            response.status === 429 ? Number(response.headers.get('retry-after') || 60) : 30;
+          return json(origin, { error: 'token_refresh_unavailable', retry_after: retryAfter }, 503);
         }
         const refresh = await persistRefreshToken(env, result, body.refresh_session_id);
         if (!refresh.sessionId && result.expires_in) {
