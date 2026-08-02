@@ -207,6 +207,86 @@ describe('outbox durability & error handling', () => {
     processor.destroy();
   });
 
+  it('marks a lease-expired create as ambiguous after the tab crashed during POST', async () => {
+    let postCalls = 0;
+    await db.outbox.add({
+      id: 'crashed-create',
+      type: 'create_issue',
+      entityKey: 'pending-crash',
+      repositoryFullName: 'acme/repo',
+      payload: { title: 'Maybe created' },
+      state: 'syncing',
+      requestStarted: true,
+      attemptCount: 1,
+      creationStage: 'not_started',
+      leaseExpiresAt: new Date(Date.now() - 1_000).toISOString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      accountId: '1001',
+    });
+    const processor = new OutboxProcessor({
+      getApi: () =>
+        ({
+          createIssue: async () => {
+            postCalls += 1;
+            return normalizeIssue('acme/repo', apiIssue(), '1001');
+          },
+        }) as any,
+      getActiveAccountId: () => '1001',
+      onEvent: () => undefined,
+    });
+
+    await processor.process();
+
+    expect(postCalls).toBe(0);
+    expect(await db.outbox.get('crashed-create')).toMatchObject({
+      state: 'attention',
+      ambiguityRisk: true,
+      requestStarted: true,
+    });
+    processor.destroy();
+  });
+
+  it('aborts an in-flight POST on logout and preserves an ambiguity marker', async () => {
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const api = {
+      createIssue: async (_repo: string, _input: unknown, signal?: AbortSignal) => {
+        markStarted();
+        return await new Promise<never>((_resolve, reject) => {
+          signal?.addEventListener('abort', () =>
+            reject(new DOMException('cancelled', 'AbortError')),
+          );
+        });
+      },
+    };
+    const processor = new OutboxProcessor({
+      getApi: () => api as any,
+      getActiveAccountId: () => '1001',
+      onEvent: () => undefined,
+    });
+    const operation = await processor.enqueue({
+      type: 'create_issue',
+      entityKey: 'pending-logout',
+      repositoryFullName: 'acme/repo',
+      payload: { title: 'Do not duplicate', labels: [], assignees: [] },
+      accountId: '1001',
+    });
+    const processing = processor.process();
+    await started;
+
+    processor.destroy();
+    await processing;
+
+    expect(await db.outbox.get(operation.id)).toMatchObject({
+      state: 'attention',
+      ambiguityRisk: true,
+    });
+    expect(await db.githubIssuesCache.count()).toBe(0);
+  });
+
   it('lease fallback prevents duplicate execution across two processors when Web Locks is disabled', async () => {
     let apiCallCount = 0;
     const api = {

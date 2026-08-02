@@ -52,6 +52,41 @@ describe('pending actions and note conversion lifecycle', () => {
     });
   });
 
+  it('blocks GitHub writes for a read-only repository before creating outbox work', async () => {
+    useAppStore.setState({
+      user: { id: 1001, login: 'fox', name: 'Fox', avatarUrl: '' },
+      repositories: [
+        {
+          id: 1,
+          installationId: 7,
+          fullName: 'acme/read-only',
+          owner: 'acme',
+          name: 'read-only',
+          private: false,
+          permissions: { pull: true, push: false },
+          pinned: true,
+          updatedAt: now,
+          accountId: '1001',
+        },
+      ],
+    });
+
+    await useAppStore.getState().createTask({
+      title: 'Must not enqueue',
+      description: '',
+      status: 'todo',
+      repositoryFullName: 'acme/read-only',
+      tags: [],
+      checklist: [],
+      priority: 'none',
+      assignees: [],
+    });
+
+    expect(await db.outbox.count()).toBe(0);
+    expect(await db.pendingIssues.count()).toBe(0);
+    expect(useAppStore.getState().error).toContain('только для чтения');
+  });
+
   it('updates a 422 payload in-place and returns the same operation to pending', async () => {
     await db.pendingIssues.put(pending);
     await db.outbox.put(operation);
@@ -108,6 +143,108 @@ describe('pending actions and note conversion lifecycle', () => {
     expect(useAppStore.getState().selectedTask).toBeNull();
     expect(useAppStore.getState().tabs).toHaveLength(1);
     expect(useAppStore.getState().tabs[0]?.entity).toEqual({ kind: 'all' });
+  });
+
+  it('updates pending repository tabs and rebuilds system labels from status/priority', async () => {
+    const ambiguous = {
+      ...operation,
+      ambiguityRisk: true,
+      payload: {
+        ...operation.payload,
+        labels: ['bug', 'kf:status:todo', 'kf:priority:none'],
+      },
+    };
+    const withLabels = {
+      ...pending,
+      labels: [
+        { name: 'bug', color: 'ff0000' },
+        { name: 'kf:status:todo', color: '000000' },
+        { name: 'kf:priority:none', color: '000000' },
+      ],
+    };
+    await db.pendingIssues.put(withLabels);
+    await db.outbox.put(ambiguous);
+    await db.tabs.put({
+      id: 'pending-tab-update',
+      entity: {
+        kind: 'pending-issue',
+        repositoryFullName: 'acme/repo',
+        clientLocalId: pending.clientLocalId,
+      },
+      title: pending.title,
+      position: 0,
+      active: true,
+      accountId: '1001',
+    });
+    useAppStore.setState({
+      user: { id: 1001, login: 'fox', name: 'Fox', avatarUrl: '' },
+      repositories: [
+        {
+          id: 2,
+          installationId: 1,
+          fullName: 'acme/next',
+          owner: 'acme',
+          name: 'next',
+          private: false,
+          permissions: { pull: true, push: true },
+          pinned: true,
+          updatedAt: now,
+          accountId: '1001',
+        },
+      ],
+      pendingIssues: [withLabels],
+      outbox: [ambiguous],
+    });
+
+    await useAppStore.getState().updatePendingOperation(pending.clientLocalId, {
+      title: 'Moved pending',
+      repositoryFullName: 'acme/next',
+      labels: ['bug'],
+      status: 'in_progress',
+      priority: 'urgent',
+    });
+
+    expect(await db.pendingIssues.get(pending.clientLocalId)).toMatchObject({
+      repositoryFullName: 'acme/next',
+      title: 'Moved pending',
+      derivedStatus: 'in_progress',
+      derivedPriority: 'urgent',
+    });
+    expect((await db.outbox.get(operation.id))?.payload.labels).toEqual([
+      'bug',
+      'kf:status:in-progress',
+      'kf:priority:urgent',
+    ]);
+    expect((await db.tabs.get('pending-tab-update'))?.entity).toEqual({
+      kind: 'pending-issue',
+      repositoryFullName: 'acme/next',
+      clientLocalId: pending.clientLocalId,
+    });
+    expect((await db.tabs.get('pending-tab-update'))?.title).toBe('Moved pending');
+  });
+
+  it('cancels every outbox candidate linked to an ambiguous migration group', async () => {
+    const migrationGroupId = 'migration-group';
+    const groupedPending = { ...pending, migrationGroupId, needsAttention: true };
+    const candidates = ['candidate-a', 'candidate-b'].map((id) => ({
+      ...operation,
+      id,
+      entityKey: id,
+      migrationGroupId,
+      ambiguityRisk: true,
+    }));
+    await db.pendingIssues.put(groupedPending);
+    await db.outbox.bulkPut(candidates);
+    useAppStore.setState({
+      user: { id: 1001, login: 'fox', name: 'Fox', avatarUrl: '' },
+      pendingIssues: [groupedPending],
+      outbox: candidates,
+    });
+
+    await useAppStore.getState().cancelPendingOperation(groupedPending.clientLocalId);
+
+    expect(await db.pendingIssues.count()).toBe(0);
+    expect(await db.outbox.count()).toBe(0);
   });
 
   it('does not retry an ambiguous POST until the explicit confirmation path is used', async () => {

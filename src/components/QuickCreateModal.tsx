@@ -36,6 +36,10 @@ export function QuickCreateModal() {
   const [loadingLabels, setLoadingLabels] = useState(false);
 
   const open = createDialog.open;
+  const selectedRepository = repositories.find((repo) => repo.fullName === repository);
+  const writeBlocked = Boolean(
+    repository && status !== 'question' && selectedRepository?.permissions.push === false,
+  );
 
   useEffect(() => {
     if (open) {
@@ -106,6 +110,7 @@ export function QuickCreateModal() {
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!title.trim()) return;
+    if (writeBlocked) return;
 
     const finalTags = repository
       ? selectedLabels
@@ -295,9 +300,15 @@ export function QuickCreateModal() {
         )}
         <footer>
           <span>
-            <kbd>Enter</kbd> создать
+            {writeBlocked ? (
+              'Репозиторий доступен только для чтения'
+            ) : (
+              <>
+                <kbd>Enter</kbd> создать
+              </>
+            )}
           </span>
-          <button type="submit" className="primary">
+          <button type="submit" className="primary" disabled={writeBlocked}>
             Создать
           </button>
         </footer>

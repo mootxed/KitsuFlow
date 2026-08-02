@@ -14,7 +14,9 @@ export function ConversionModal() {
   const noteId = conversionDialog.noteId;
   const note = useAppStore((state) => state.notes.find((item) => item.id === noteId));
   const repositories = useAppStore(
-    useShallow((state) => state.repositories.filter((repo) => repo.pinned)),
+    useShallow((state) =>
+      state.repositories.filter((repo) => repo.pinned && repo.permissions.push),
+    ),
   );
   const setNoteId = useAppStore((state) => state.setConversionNoteId);
   const confirm = useAppStore((state) => state.confirmConversion);

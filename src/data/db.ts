@@ -200,7 +200,8 @@ export class KitsuFlowDatabase extends Dexie {
         localNotes: 'id, status, repositoryFullName, updatedAt, syncState, accountId',
         githubIssuesCache:
           '[accountId+repositoryFullName+issueNumber], accountId, repositoryFullName, derivedStatus, updatedAt, syncState, clientLocalId',
-        pendingIssues: 'clientLocalId, accountId, repositoryFullName, createdAt, needsAttention',
+        pendingIssues:
+          'clientLocalId, accountId, repositoryFullName, createdAt, needsAttention, migrationGroupId',
         repositoriesCache:
           '[accountId+fullName], accountId, fullName, pinned, installationId, updatedAt',
         repositoryLabelsCache:
@@ -208,7 +209,7 @@ export class KitsuFlowDatabase extends Dexie {
         repositoryAssigneesCache:
           '[accountId+repositoryFullName], accountId, repositoryFullName, cachedAt',
         outbox:
-          'id, type, entityKey, state, repositoryFullName, accountId, createdAt, nextAttemptAt, leaseExpiresAt, ambiguityRisk',
+          'id, type, entityKey, state, repositoryFullName, accountId, createdAt, nextAttemptAt, leaseExpiresAt, ambiguityRisk, migrationGroupId',
         tabs: 'id, accountId, active, position',
         settings: 'key',
         syncMetadata: 'key, accountId, updatedAt',
@@ -227,9 +228,14 @@ export class KitsuFlowDatabase extends Dexie {
           title: string;
         }> = [];
 
-        const resolveClientLocalId = (
-          record: Record<string, unknown>,
-        ): { clientLocalId: string; ambiguous: boolean; operation?: OutboxOperation } => {
+        interface PendingResolution {
+          clientLocalId: string;
+          ambiguous: boolean;
+          candidates: OutboxOperation[];
+          operation?: OutboxOperation | undefined;
+        }
+
+        const resolveClientLocalId = (record: Record<string, unknown>): PendingResolution => {
           const existing =
             typeof record.clientLocalId === 'string' && record.clientLocalId
               ? record.clientLocalId
@@ -237,7 +243,7 @@ export class KitsuFlowDatabase extends Dexie {
           const accountId = String(record.accountId || 'legacy-unassigned');
           const repositoryFullName = String(record.repositoryFullName || '');
           const title = String(record.title || '');
-          const candidates = operations.filter((operation) => {
+          const eligible = operations.filter((operation) => {
             if (
               operation.accountId !== accountId ||
               operation.repositoryFullName !== repositoryFullName
@@ -245,29 +251,41 @@ export class KitsuFlowDatabase extends Dexie {
               return false;
             if (operation.type !== 'create_issue' && operation.type !== 'convert_note')
               return false;
-            if (existing && operation.entityKey === existing) return true;
-            if (operation.payload.clientLocalId === existing && existing) return true;
-            return String(operation.payload.title || '') === title;
+            return true;
           });
+          const exactCandidates = existing
+            ? eligible.filter(
+                (operation) =>
+                  operation.entityKey === existing || operation.payload.clientLocalId === existing,
+              )
+            : [];
+          const candidates = exactCandidates.length
+            ? exactCandidates
+            : eligible.filter((operation) => String(operation.payload.title || '') === title);
           const operation = candidates.length === 1 ? candidates[0] : undefined;
           if (operation) {
             return {
               clientLocalId: operation.entityKey,
               ambiguous: false,
+              candidates,
               operation,
             };
           }
           return {
             clientLocalId: existing || crypto.randomUUID(),
             ambiguous: candidates.length > 1,
+            candidates,
           };
         };
 
-        const writePending = async (record: Record<string, unknown>) => {
-          const resolved = resolveClientLocalId(record);
+        const writePending = async (
+          record: Record<string, unknown>,
+          resolved = resolveClientLocalId(record),
+        ) => {
           const accountId = String(record.accountId || 'legacy-unassigned');
           const repositoryFullName = String(record.repositoryFullName || '');
           const title = String(record.title || 'Временная Issue');
+          const migrationGroupId = resolved.ambiguous ? crypto.randomUUID() : undefined;
           const pending: PendingIssue = {
             clientLocalId: resolved.clientLocalId,
             repositoryFullName,
@@ -296,8 +314,9 @@ export class KitsuFlowDatabase extends Dexie {
             updatedAt: String(record.updatedAt || record.createdAt || new Date().toISOString()),
             needsAttention: resolved.ambiguous || undefined,
             migrationDiagnostic: resolved.ambiguous
-              ? 'Несколько legacy-операций соответствуют временной Issue; требуется ручная проверка.'
+              ? 'Несколько legacy-операций остановлены. Проверьте GitHub и отмените группу перед повторным созданием.'
               : undefined,
+            migrationGroupId,
           };
           await pendingTable.put(pending);
           if (resolved.operation) {
@@ -308,6 +327,22 @@ export class KitsuFlowDatabase extends Dexie {
                 clientLocalId: resolved.clientLocalId,
               },
             });
+          } else if (migrationGroupId) {
+            const diagnostic =
+              'Неоднозначная legacy-миграция: автоматическая отправка запрещена до ручной проверки.';
+            for (const candidate of resolved.candidates) {
+              await outboxTable.update(candidate.id, {
+                state: 'attention',
+                ambiguityRisk: true,
+                migrationGroupId,
+                lastError: diagnostic,
+                nextAttemptAt: undefined,
+                claimedAt: undefined,
+                leaseOwner: undefined,
+                leaseExpiresAt: undefined,
+                updatedAt: new Date().toISOString(),
+              });
+            }
           }
           migrated.push({
             accountId,
@@ -322,7 +357,7 @@ export class KitsuFlowDatabase extends Dexie {
           const oldId = String(record.clientLocalId || '');
           const resolved = resolveClientLocalId(record);
           if (oldId && oldId !== resolved.clientLocalId) await pendingTable.delete(oldId);
-          await writePending(record);
+          await writePending(record, resolved);
         }
 
         const temporaryIssues = (

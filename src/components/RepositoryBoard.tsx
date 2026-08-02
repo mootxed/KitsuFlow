@@ -59,6 +59,11 @@ function QuestionDrop({
 }
 
 export function RepositoryBoard({ repositoryFullName }: { repositoryFullName: string }) {
+  const canWrite = useAppStore(
+    (state) =>
+      state.repositories.find((repository) => repository.fullName === repositoryFullName)
+        ?.permissions.push !== false,
+  );
   const issues = useAppStore(
     useShallow((state) =>
       state.issues.filter((issue) => issue.repositoryFullName === repositoryFullName),
@@ -99,6 +104,8 @@ export function RepositoryBoard({ repositoryFullName }: { repositoryFullName: st
           <button onClick={() => void refreshIssues(repositoryFullName)}>Обновить</button>
           <button
             className="primary"
+            disabled={!canWrite}
+            title={canWrite ? undefined : 'Репозиторий доступен только для чтения'}
             onClick={() =>
               setCreateOpen(true, {
                 initialRepositoryFullName: repositoryFullName,
@@ -109,6 +116,7 @@ export function RepositoryBoard({ repositoryFullName }: { repositoryFullName: st
           </button>
         </div>
       </header>
+      {!canWrite && <p className="hint">Режим только для чтения: действия записи отключены.</p>}
       {SECTIONS.map((status) => {
         const sectionIssues = issues.filter((issue) => issue.derivedStatus === status);
         const sectionPendingIssues = pendingIssues.filter(

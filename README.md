@@ -6,7 +6,7 @@ KitsuFlow — компактный local-first менеджер задач дл�
 
 ## Возможности первой версии
 
-- GitHub OAuth Authorization Code + PKCE через ограниченный Cloudflare Worker; локальный legacy Device Flow включается только явно;
+- GitHub App Authorization Code + PKCE через ограниченный Cloudflare Worker; локальный legacy Device Flow включается только явно;
 - получение установок GitHub App и выбор закреплённых репозиториев;
 - загрузка и локальный кеш GitHub Issues без Pull Requests;
 - локальные заметки, теги и чек-листы в IndexedDB;
@@ -66,7 +66,9 @@ VITE_BASE_PATH=/
 VITE_APP_NAME=KitsuFlow
 ```
 
-После PKCE callback клиент получает token через Worker и проверяет его запросом текущего пользователя. Токен живёт только в `sessionStorage` (ключ `kitsuflow.github.access-token`), не попадает в Zustand persistence, IndexedDB, URL или логи и удаляется при выходе/401. Настройка Worker: [docs/oauth-proxy-setup.md](docs/oauth-proxy-setup.md).
+После PKCE callback клиент получает GitHub App user access token через Worker и проверяет его запросом текущего пользователя. Обычные OAuth Apps не поддерживаются: приложение использует `/user/installations` и permissions установленного GitHub App, а не OAuth scopes.
+
+Короткоживущий access token и непрозрачный идентификатор Worker refresh-сессии живут только в `sessionStorage` (ключ `kitsuflow.github.access-token`). GitHub `refresh_token` хранится только в Cloudflare KV и никогда не передаётся JavaScript-клиенту. Worker ротирует оба GitHub token до истечения восьмичасового access token. Настройка: [docs/oauth-proxy-setup.md](docs/oauth-proxy-setup.md).
 
 ## GitHub Pages и production OAuth
 
@@ -77,12 +79,12 @@ Workflow [deploy-pages.yml](.github/workflows/deploy-pages.yml) публикуе
    - `VITE_GITHUB_CLIENT_ID`;
    - `VITE_GITHUB_APP_SLUG` или `VITE_GITHUB_APP_INSTALL_URL`.
    - `VITE_OAUTH_PROXY_URL` — публичный HTTPS URL Worker, без секретов.
-3. Добавьте Pages URL в Homepage/callback URL OAuth App и в `ALLOWED_ORIGINS`/`ALLOWED_REDIRECT_URIS` Worker.
+3. Добавьте Pages URL в Homepage/callback URL GitHub App и в `ALLOWED_ORIGINS`/`ALLOWED_REDIRECT_URIS` Worker.
 4. Выполните push в основную ветку.
 
 Без `VITE_OAUTH_PROXY_URL` кнопка входа показывает ошибку конфигурации: скрытого production fallback на Device Flow нет. Device Flow остаётся только для `DEV` или `VITE_ENABLE_LEGACY_DEVICE_FLOW=true`, потому что browser CORS делает его ненадёжным на Pages.
 
-Workflow передаёт `VITE_BASE_PATH=/<repository-name>/`. CSP формируется Vite-плагином во время сборки: в `connect-src` добавляется только origin настроенного proxy, а не произвольный Worker URL из исходного `index.html`. В Actions Variables нет секретов: `client_id`, proxy URL и URL установки публичны.
+Workflow передаёт `VITE_BASE_PATH=/<repository-name>/` и останавливает deploy до сборки, если `VITE_GITHUB_CLIENT_ID` или HTTPS `VITE_OAUTH_PROXY_URL` отсутствует. CSP формируется Vite-плагином: в `connect-src` добавляется только origin настроенного proxy. В Actions Variables нет секретов: `client_id`, proxy URL и URL установки публичны.
 
 ## Хранение данных и миграция
 
@@ -90,7 +92,7 @@ Workflow передаёт `VITE_BASE_PATH=/<repository-name>/`. CSP формир
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | GitHub           | Issues, state, обычные labels, `kf:status:*`, `kf:priority:*`, assignees                                               |
 | IndexedDB        | `kitsuflow-db` v6: заметки, кеш реальных Issues/репозиториев, `pendingIssues`, outbox, вкладки, настройки и метаданные |
-| `sessionStorage` | `kitsuflow.github.access-token`: только OAuth access token активной вкладки браузера                                   |
+| `sessionStorage` | GitHub App access token, expiry и непрозрачный идентификатор серверной refresh-сессии                                  |
 
 ### Автоматическая миграция IndexedDB
 
@@ -115,6 +117,7 @@ Service Worker кеширует только оболочку приложени
 ## Безопасность
 
 - Никогда не добавляйте PAT, client secret или access token в Vite `.env`, репозиторий и Actions Variables. `GITHUB_CLIENT_SECRET` хранится только через `wrangler secret put`.
+- GitHub refresh token хранится только в KV binding `OAUTH_SESSIONS`; браузер и Pages bundle его не получают.
 - `.env` исключён через `.gitignore`; публикуйте только `.env.example`.
 - Markdown рендерится React-компонентами без `dangerouslySetInnerHTML` и без raw HTML.
 - CSP ограничивает scripts/images/connect endpoints GitHub API и OAuth.
@@ -128,6 +131,7 @@ Service Worker кеширует только оболочку приложени
 ## Известные ограничения
 
 - Production OAuth требует развёрнутый и настроенный Worker; локальный mock proxy не доказывает работу реального опубликованного OAuth.
+- Поддерживается только GitHub App с user-to-server token expiration. Обычный OAuth App несовместим с моделью installations.
 - Offline-изменения не синхронизируются, пока вкладка/PWA снова не окажется онлайн и пользователь не войдёт.
 - При неоднозначном сетевом разрыве GitHub не даёт idempotency key: UI требует ручной проверки репозитория и отдельного подтверждения повторного POST.
 - Нет ручной сортировки внутри колонок: используется `updatedAt`.

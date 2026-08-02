@@ -8,6 +8,23 @@ import {
 } from '../domain/github-mapping';
 import type { GitHubIssue, GitHubUser, IssueLabel, Repository, TaskStatus } from '../domain/types';
 
+interface InstallationRecord {
+  id: number;
+  account?: { login?: string | undefined; name?: string | undefined } | null | undefined;
+}
+
+export interface InstallationRepositoryFailure {
+  installationId: number;
+  account: string;
+  error: unknown;
+}
+
+export interface RepositoryLoadResult {
+  repositories: Repository[];
+  failedInstallations: InstallationRepositoryFailure[];
+  installationCount: number;
+}
+
 const splitRepository = (fullName: string): [string, string] => {
   const [owner, repo] = fullName.split('/');
   if (!owner || !repo) throw new Error(`Некорректный репозиторий: ${fullName}`);
@@ -36,22 +53,28 @@ export class GitHubApi {
   }
 
   async getInstallations(): Promise<Array<{ id: number; account: string }>> {
-    const { data } = await this.octokit.request('GET /user/installations', { per_page: 100 });
-    return data.installations.map((installation: any) => ({
+    const installations = await this.octokit.paginate('GET /user/installations', {
+      per_page: 100,
+    });
+    return (installations as InstallationRecord[]).map((installation) => ({
       id: installation.id,
       account: installation.account?.login || installation.account?.name || 'GitHub',
     }));
   }
 
-  async getInstallationRepositories(installationId: number): Promise<Repository[]> {
+  async getInstallationRepositories(
+    installationId: number,
+    signal?: AbortSignal,
+  ): Promise<Repository[]> {
     const response = await this.octokit.paginate(
       'GET /user/installations/{installation_id}/repositories',
       {
         installation_id: installationId,
         per_page: 100,
+        ...(signal ? { request: { signal } } : {}),
       },
     );
-    return response.map((repo: any) => ({
+    return response.map((repo) => ({
       id: repo.id,
       installationId,
       fullName: repo.full_name,
@@ -65,15 +88,29 @@ export class GitHubApi {
     }));
   }
 
-  async getRepositories(): Promise<Repository[]> {
+  async getRepositories(): Promise<RepositoryLoadResult> {
     const installations = await this.getInstallations();
-    const groups = await Promise.all(
+    const groups = await Promise.allSettled(
       installations.map((installation) => this.getInstallationRepositories(installation.id)),
     );
-    return groups.flat();
+    const repositories: Repository[] = [];
+    const failedInstallations: InstallationRepositoryFailure[] = [];
+    groups.forEach((result, index) => {
+      const installation = installations[index];
+      if (!installation) return;
+      if (result.status === 'fulfilled') repositories.push(...result.value);
+      else {
+        failedInstallations.push({
+          installationId: installation.id,
+          account: installation.account,
+          error: result.reason,
+        });
+      }
+    });
+    return { repositories, failedInstallations, installationCount: installations.length };
   }
 
-  async getIssues(repositoryFullName: string): Promise<GitHubIssue[]> {
+  async getIssues(repositoryFullName: string, signal?: AbortSignal): Promise<GitHubIssue[]> {
     const [owner, repo] = splitRepository(repositoryFullName);
     const response = await this.octokit.paginate(this.octokit.rest.issues.listForRepo, {
       owner,
@@ -82,18 +119,20 @@ export class GitHubApi {
       sort: 'updated',
       direction: 'desc',
       per_page: 100,
+      ...(signal ? { request: { signal } } : {}),
     });
     return response
       .filter((issue) => !isPullRequest(issue as ApiIssue))
       .map((issue) => normalizeIssue(repositoryFullName, issue as ApiIssue));
   }
 
-  async getLabels(repositoryFullName: string): Promise<IssueLabel[]> {
+  async getLabels(repositoryFullName: string, signal?: AbortSignal): Promise<IssueLabel[]> {
     const [owner, repo] = splitRepository(repositoryFullName);
     const labels = await this.octokit.paginate(this.octokit.rest.issues.listLabelsForRepo, {
       owner,
       repo,
       per_page: 100,
+      ...(signal ? { request: { signal } } : {}),
     });
     return labels.map((label) => ({
       name: label.name,
@@ -102,29 +141,42 @@ export class GitHubApi {
     }));
   }
 
-  async getAssignees(repositoryFullName: string): Promise<string[]> {
+  async getAssignees(repositoryFullName: string, signal?: AbortSignal): Promise<string[]> {
     const [owner, repo] = splitRepository(repositoryFullName);
     const users = await this.octokit.paginate(this.octokit.rest.issues.listAssignees, {
       owner,
       repo,
       per_page: 100,
+      ...(signal ? { request: { signal } } : {}),
     });
     return users.map((user) => user.login);
   }
 
-  async ensureSystemLabels(repositoryFullName: string, names: string[]): Promise<void> {
+  async ensureSystemLabels(
+    repositoryFullName: string,
+    names: string[],
+    signal?: AbortSignal,
+  ): Promise<void> {
     const required = names.filter((name) => name in SYSTEM_LABEL_DEFINITIONS);
     if (!required.length) return;
-    const existing = new Set((await this.getLabels(repositoryFullName)).map((label) => label.name));
+    const existing = new Set(
+      (await this.getLabels(repositoryFullName, signal)).map((label) => label.name),
+    );
     const [owner, repo] = splitRepository(repositoryFullName);
     for (const name of required) {
       if (existing.has(name)) continue;
       const definition = SYSTEM_LABEL_DEFINITIONS[name];
       if (!definition) continue;
       try {
-        await this.octokit.rest.issues.createLabel({ owner, repo, name, ...definition });
-      } catch (error: any) {
-        if (error?.status !== 422) throw error;
+        await this.octokit.rest.issues.createLabel({
+          owner,
+          repo,
+          name,
+          ...definition,
+          ...(signal ? { request: { signal } } : {}),
+        });
+      } catch (error: unknown) {
+        if ((error as { status?: number }).status !== 422) throw error;
       }
     }
   }
@@ -132,10 +184,16 @@ export class GitHubApi {
   async createIssue(
     repositoryFullName: string,
     input: { title: string; body: string; labels: string[]; assignees: string[] },
+    signal?: AbortSignal,
   ): Promise<GitHubIssue> {
-    await this.ensureSystemLabels(repositoryFullName, input.labels);
+    await this.ensureSystemLabels(repositoryFullName, input.labels, signal);
     const [owner, repo] = splitRepository(repositoryFullName);
-    const { data } = await this.octokit.rest.issues.create({ owner, repo, ...input });
+    const { data } = await this.octokit.rest.issues.create({
+      owner,
+      repo,
+      ...input,
+      ...(signal ? { request: { signal } } : {}),
+    });
     return normalizeIssue(repositoryFullName, data as ApiIssue);
   }
 
@@ -149,10 +207,11 @@ export class GitHubApi {
       assignees?: string[] | undefined;
       state?: 'open' | 'closed' | undefined;
     },
+    signal?: AbortSignal,
   ): Promise<GitHubIssue> {
-    if (input.labels) await this.ensureSystemLabels(repositoryFullName, input.labels);
+    if (input.labels) await this.ensureSystemLabels(repositoryFullName, input.labels, signal);
     const [owner, repo] = splitRepository(repositoryFullName);
-    const parameters: any = {
+    const parameters: Parameters<typeof this.octokit.rest.issues.update>[0] = {
       owner,
       repo,
       issue_number: issueNumber,
@@ -162,6 +221,7 @@ export class GitHubApi {
     if (input.labels !== undefined) parameters.labels = input.labels;
     if (input.assignees !== undefined) parameters.assignees = input.assignees;
     if (input.state !== undefined) parameters.state = input.state;
+    if (signal) parameters.request = { signal };
     const { data } = await this.octokit.rest.issues.update(parameters);
     return normalizeIssue(repositoryFullName, data as ApiIssue);
   }

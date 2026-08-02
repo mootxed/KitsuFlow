@@ -17,7 +17,9 @@ UI → optimistic Zustand/IndexedDB → outbox → GitHub API
 
 GitHub остаётся источником истины. Кеш нужен для быстрого старта и offline-чтения; при сети закреплённые репозитории обновляются заново.
 
-Production UI размещается статически, но OAuth использует минимальный Cloudflare Worker для хранения `client_secret` и server-side token exchange. CSP собирается из `VITE_OAUTH_PROXY_URL` и разрешает только его origin.
+Production UI размещается статически, но GitHub App OAuth использует Cloudflare Worker для хранения `client_secret`, server-side token exchange и refresh. GitHub refresh token находится в Cloudflare KV; Pages получает короткоживущий access token и непрозрачный session ID. CSP собирается из `VITE_OAUTH_PROXY_URL` и разрешает только его origin.
+
+Поддерживается только GitHub App: `/user/installations` и `/user/installations/{id}/repositories` требуют соответствующей user-access-token модели. OAuth scopes не запрашиваются.
 
 Каждый GET Issues получает request ID и стартовую revision репозитория. Успешные локальные мутации увеличивают revision конкретной Issue; старый ответ может добавить безопасные сетевые записи, но не удаляет и не перезаписывает данные, изменённые после старта.
 

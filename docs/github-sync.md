@@ -2,11 +2,13 @@
 
 ## Авторизация
 
-Production использует Authorization Code + PKCE через Cloudflare Worker. `client_secret` находится только в Worker; access token — только в `sessionStorage`. Callback обрабатывает GitHub error-параметры и не выполняет повторную синхронизацию. Device Flow сохранён только как явный локальный legacy-режим.
+Production использует GitHub App Authorization Code + PKCE через Cloudflare Worker. OAuth App не поддерживается и `scope=repo` не запрашивается. `client_secret` и GitHub refresh token находятся только в Worker/KV; access token и непрозрачный refresh-session ID — только в `sessionStorage`. Worker ротирует expiring user access token до истечения. Callback обрабатывает GitHub error-параметры и не выполняет повторную синхронизацию.
 
 ## Чтение
 
-Через `/user/installations` загружаются установки и их репозитории. Issues читаются постранично через Octokit; элементы с `pull_request` отбрасываются. Labels кешируются отдельно. Repository revision/request ID защищает от обратного порядка GET и outbox: локально изменённая часть сохраняется, а безопасная часть сетевого снимка всё ещё применяется.
+`/user/installations` и repositories каждой установки загружаются постранично. Сбой одной установки не теряет остальные; при частичном ответе старый cache сохраняется. Только полный успешный refresh удаляет репозитории, которых больше нет. Репозитории без `permissions.push` остаются доступными для чтения, но write-actions отключены.
+
+Issues читаются постранично через Octokit; элементы с `pull_request` отбрасываются. Repository revision/request ID защищает от обратного порядка GET и outbox: локально изменённая часть сохраняется, а безопасная часть сетевого снимка всё ещё применяется.
 
 ## Запись и outbox
 
@@ -17,6 +19,8 @@ Production использует Authorization Code + PKCE через Cloudflare 
 Создание Issue имеет особую защиту: перед сетевым POST операция помечается `requestStarted`. Любая неопределённая ошибка после этого переводит её в `attention` с `ambiguityRisk`, потому что безопасного idempotency key у GitHub Issues API нет. Обычная кнопка retry скрывается: пользователь сначала открывает поиск репозитория и отдельно подтверждает повторный POST. 403/404/422 можно исправить обновлением payload существующей операции или отменить атомарно вместе с pending-карточкой/вкладками.
 
 При успешной конвертации настоящая Issue, удаление заметки, замена/дедупликация вкладки и удаление outbox выполняются одной Dexie-транзакцией; выбранная правая панель переключается на настоящую Issue.
+
+При logout processor отменяет активный transport через `AbortController` и инвалидирует generation. Если create POST уже мог достичь GitHub, запись сохраняется как `attention + ambiguityRisk`. Неоднозначные кандидаты миграции объединяются через `migrationGroupId`, блокируются от автоматического выполнения и отменяются всей группой.
 
 ## Состояния ошибок и повторов
 

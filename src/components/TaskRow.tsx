@@ -26,15 +26,27 @@ export function TaskRow({ item, kind, compact = false }: Props) {
   const note = kind === 'note' ? item : null;
   const linkedOperation = useAppStore((state) =>
     pending
-      ? state.outbox.find((operation) => operation.entityKey === pending.clientLocalId)
+      ? state.outbox.find(
+          (operation) =>
+            operation.entityKey === pending.clientLocalId ||
+            Boolean(
+              pending.migrationGroupId && operation.migrationGroupId === pending.migrationGroupId,
+            ),
+        )
       : undefined,
+  );
+  const issueReadOnly = useAppStore((state) =>
+    issue
+      ? state.repositories.find((repository) => repository.fullName === issue.repositoryFullName)
+          ?.permissions.push === false
+      : false,
   );
   const key =
     note?.id || pending?.clientLocalId || `${issue!.repositoryFullName}#${issue!.issueNumber}`;
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: `${kind}:${key}`,
     data: { type: kind, item },
-    disabled: kind === 'pending',
+    disabled: kind === 'pending' || issueReadOnly,
   });
   const open = (newTab: boolean) =>
     void openEntity(
@@ -75,8 +87,15 @@ export function TaskRow({ item, kind, compact = false }: Props) {
         if (event.key === 'Enter') open(event.shiftKey);
       }}
     >
-      {pending ? (
-        <span className="drag-handle disabled" title="Pending Issue нельзя перемещать">
+      {pending || issueReadOnly ? (
+        <span
+          className="drag-handle disabled"
+          title={
+            issueReadOnly
+              ? 'Репозиторий доступен только для чтения'
+              : 'Pending Issue нельзя перемещать'
+          }
+        >
           <Clock size={13} />
         </span>
       ) : (

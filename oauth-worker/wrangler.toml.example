@@ -2,8 +2,13 @@ name = "kitsuflow-oauth-proxy"
 main = "src/index.ts"
 compatibility_date = "2026-08-01"
 
+[[kv_namespaces]]
+binding = "OAUTH_SESSIONS"
+id = "replace-with-production-kv-namespace-id"
+preview_id = "replace-with-preview-kv-namespace-id"
+
 [vars]
-GITHUB_CLIENT_ID = "your-github-oauth-client-id"
+GITHUB_CLIENT_ID = "your-github-app-client-id"
 ALLOWED_ORIGINS = "https://mootxed.github.io,http://localhost:4173,http://127.0.0.1:4173"
 ALLOWED_REDIRECT_URIS = "https://mootxed.github.io/KitsuFlow/,http://localhost:4173/"
 

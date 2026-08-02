@@ -39,9 +39,11 @@ import {
   exchangeCode,
   generatePkce,
   parseCallback,
+  refreshAccessToken,
+  revokeRefreshSession,
   savePkceState,
 } from '../github/oauth-pkce';
-import { session } from '../github/session';
+import { session, type GitHubAuthSession } from '../github/session';
 import { OutboxProcessor, type SyncEvent } from '../sync/outbox';
 import {
   beginRepositoryRefresh,
@@ -208,6 +210,8 @@ interface AppState {
       repositoryFullName?: string | undefined;
       labels?: string[] | undefined;
       assignees?: string[] | undefined;
+      status?: Exclude<TaskStatus, 'question'> | undefined;
+      priority?: IssuePriority | undefined;
     },
   ) => Promise<void>;
   cancelPendingOperation: (clientLocalId: string) => Promise<void>;
@@ -225,6 +229,8 @@ const PENDING_STATES = new Set(['pending', 'syncing', 'failed', 'attention', 'ex
 
 const deviceFlow = new DeviceFlowController();
 let outboxProcessor: OutboxProcessor;
+let tokenRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let tokenRefreshPromise: Promise<GitHubAuthSession> | null = null;
 
 const issueKey = (issue: Pick<GitHubIssue, 'repositoryFullName' | 'issueNumber'>) =>
   `${issue.repositoryFullName}#${issue.issueNumber}`;
@@ -373,6 +379,62 @@ function handleOffline(): void {
 }
 
 export const useAppStore = create<AppState>((set, get) => {
+  const activeAuthRetries = new Set<'repositories' | 'issues'>();
+  const ensureRepositoryWritable = (repositoryFullName: string): boolean => {
+    const repository = get().repositories.find((item) => item.fullName === repositoryFullName);
+    if (!repository || repository.permissions.push) return true;
+    set({ error: `Репозиторий ${repositoryFullName} доступен только для чтения.` });
+    return false;
+  };
+
+  const clearTokenRefreshTimer = (): void => {
+    if (tokenRefreshTimer) clearTimeout(tokenRefreshTimer);
+    tokenRefreshTimer = null;
+  };
+
+  const scheduleTokenRefresh = (credentials: GitHubAuthSession, generation: number): void => {
+    clearTokenRefreshTimer();
+    if (!credentials.expiresAt || !credentials.refreshSessionId) return;
+    const delay = Math.max(0, credentials.expiresAt - Date.now() - 60_000);
+    tokenRefreshTimer = setTimeout(() => {
+      tokenRefreshTimer = null;
+      void refreshStoredSession(generation, true)
+        .then(() => outboxProcessor.process())
+        .catch(() => {
+          if (get().sessionGeneration === generation) get().logout();
+        });
+    }, delay);
+  };
+
+  const refreshStoredSession = async (
+    generation: number,
+    force = false,
+  ): Promise<GitHubAuthSession> => {
+    const current = session.get();
+    if (!current) throw new Error('Сессия GitHub отсутствует.');
+    const needsRefresh = Boolean(current.expiresAt) && current.expiresAt! <= Date.now() + 60_000;
+    if (!force && !needsRefresh) {
+      scheduleTokenRefresh(current, generation);
+      return current;
+    }
+    if (!current.refreshSessionId) {
+      if (!needsRefresh && !force) return current;
+      throw new Error('GitHub refresh-сессия отсутствует. Выполните вход снова.');
+    }
+    tokenRefreshPromise ||= refreshAccessToken(current);
+    try {
+      const refreshed = await tokenRefreshPromise;
+      if (get().sessionGeneration !== generation)
+        throw new DOMException('Stale session', 'AbortError');
+      session.set(refreshed);
+      if (get().user) set({ api: new GitHubApi(refreshed.accessToken), error: null });
+      scheduleTokenRefresh(refreshed, generation);
+      return refreshed;
+    } finally {
+      tokenRefreshPromise = null;
+    }
+  };
+
   const handleIssueCreated = async (tempId: string | number, realIssue: GitHubIssue) => {
     const { selectedTask, sessionGeneration } = get();
     if (selectedTask?.kind === 'pending-issue' && selectedTask.clientLocalId === String(tempId)) {
@@ -398,21 +460,15 @@ export const useAppStore = create<AppState>((set, get) => {
   const handleSyncEvent = async (event: SyncEvent) => {
     const { sessionGeneration } = get();
     if (event.type === 'unauthorized') {
-      session.clear();
-      set({
-        user: null,
-        api: null,
-        issues: [],
-        pendingIssues: [],
-        repositories: [],
-        outbox: [],
-        selectedTask: null,
-        sessionGeneration: sessionGeneration + 1,
-        error: 'Сессия GitHub истекла. Войдите снова; очередь сохранена.',
-      });
-      const localCached = await loadLocalDeviceState();
-      set(localCached);
-      return;
+      try {
+        await refreshStoredSession(sessionGeneration, true);
+        setTimeout(() => void outboxProcessor.retry(event.operationId), 0);
+        return;
+      } catch {
+        get().logout();
+        set({ error: 'Сессия GitHub истекла. Войдите снова; очередь сохранена.' });
+        return;
+      }
     }
     if (event.type === 'rate-limited') set({ rateLimitUntil: event.retryAt });
     if (event.type === 'permission-denied') {
@@ -456,6 +512,8 @@ export const useAppStore = create<AppState>((set, get) => {
       ...cached,
       ...(authAfterRestore ? { auth: authAfterRestore } : {}),
     });
+    const credentials = session.get();
+    if (credentials) scheduleTokenRefresh(credentials, generation);
     set({ legacyClaim: await checkLegacyData(accountId) });
     await get().refreshRepositories();
     await outboxProcessor.process();
@@ -501,13 +559,14 @@ export const useAppStore = create<AppState>((set, get) => {
         : await loadLocalDeviceState();
       set({ ...cached, loading: false, initialized: true });
 
-      const token = session.getToken();
-      if (token) {
+      const storedSession = session.get();
+      if (storedSession) {
         const gen = get().sessionGeneration;
         try {
+          const credentials = await refreshStoredSession(gen);
           const callbackSucceeded = get().auth.phase === 'success';
           await restoreAuthenticatedSession(
-            token,
+            credentials.accessToken,
             gen,
             callbackSucceeded ? { phase: 'success' } : undefined,
           );
@@ -641,9 +700,9 @@ export const useAppStore = create<AppState>((set, get) => {
       set({ sessionGeneration: gen });
 
       try {
-        const token = await exchangeCode(params.code, pkce.codeVerifier);
+        const credentials = await exchangeCode(params.code, pkce.codeVerifier);
         if (get().sessionGeneration !== gen) return true;
-        session.setToken(token);
+        session.set(credentials);
         // Единственная ответственность callback: безопасно обменять и сохранить token.
         // initialize() ниже выполнит ровно одно восстановление пользователя и синхронизацию.
         set({ auth: { phase: 'success' }, error: null });
@@ -667,8 +726,10 @@ export const useAppStore = create<AppState>((set, get) => {
 
     logout: () => {
       deviceFlow.cancel();
-      session.clear();
       outboxProcessor.destroy();
+      clearTokenRefreshTimer();
+      const credentials = session.clear();
+      if (credentials) void revokeRefreshSession(credentials).catch(() => undefined);
       const gen = get().sessionGeneration + 1;
       const localDefaultTab = defaultTab(null);
       void persistTabs([localDefaultTab], null);
@@ -696,26 +757,76 @@ export const useAppStore = create<AppState>((set, get) => {
       const gen = get().sessionGeneration;
       try {
         const currentMap = new Map(get().repositories.map((repo) => [repo.fullName, repo]));
-        const repositories: Repository[] = (await api.getRepositories()).map((repo) => ({
+        const result = await api.getRepositories();
+        const repositories: Repository[] = result.repositories.map((repo) => ({
           ...repo,
           pinned: currentMap.get(repo.fullName)?.pinned || false,
           accountId,
         }));
         if (get().sessionGeneration !== gen) return;
-        await db.repositoriesCache.bulkPut(repositories);
-        set({ repositories, error: null });
+        let nextRepositories: Repository[];
+        await db.transaction('rw', db.repositoriesCache, async () => {
+          await db.repositoriesCache.bulkPut(repositories);
+          if (result.failedInstallations.length === 0) {
+            const freshNames = new Set(repositories.map((repository) => repository.fullName));
+            const cached = await db.repositoriesCache
+              .where('accountId')
+              .equals(accountId)
+              .toArray();
+            await db.repositoriesCache.bulkDelete(
+              cached
+                .filter((repository) => !freshNames.has(repository.fullName))
+                .map((repository) => [accountId, repository.fullName] as [string, string]),
+            );
+            nextRepositories = repositories;
+          } else {
+            const merged = new Map(
+              get().repositories.map((repository) => [repository.fullName, repository]),
+            );
+            for (const repository of repositories) merged.set(repository.fullName, repository);
+            nextRepositories = [...merged.values()];
+          }
+        });
+        if (get().sessionGeneration !== gen) return;
+        const partialMessage =
+          result.failedInstallations.length > 0
+            ? `Не удалось загрузить ${result.failedInstallations.length} из ${result.installationCount} установок GitHub App. Их кеш сохранён.`
+            : null;
+        set({
+          repositories: nextRepositories!,
+          error: partialMessage,
+          stale: Boolean(partialMessage),
+        });
       } catch (error: unknown) {
         if (get().sessionGeneration !== gen) return;
-        const status = (error as { status?: number }).status;
-        if (status === 401) {
+        const parsed = parseGitHubError(error);
+        if (parsed.kind === 'unauthorized') {
+          if (!activeAuthRetries.has('repositories')) {
+            activeAuthRetries.add('repositories');
+            try {
+              await refreshStoredSession(gen, true);
+              if (get().sessionGeneration === gen) await get().refreshRepositories();
+              return;
+            } catch (refreshError) {
+              set({
+                error:
+                  refreshError instanceof Error
+                    ? refreshError.message
+                    : 'Не удалось обновить GitHub App token.',
+              });
+            } finally {
+              activeAuthRetries.delete('repositories');
+            }
+          }
           get().logout();
           return;
         }
         set({
           error:
-            status === 403
+            parsed.kind === 'permission-denied'
               ? 'Нет доступа к установкам GitHub App.'
               : 'Не удалось загрузить репозитории.',
+          stale: true,
         });
       }
     },
@@ -858,6 +969,25 @@ export const useAppStore = create<AppState>((set, get) => {
           const parsed = parseGitHubError(error);
 
           if (parsed.kind === 'unauthorized') {
+            if (!activeAuthRetries.has('issues')) {
+              activeAuthRetries.add('issues');
+              try {
+                await refreshStoredSession(gen, true);
+                if (get().sessionGeneration === gen) {
+                  await get().refreshIssues(repositoryFullName);
+                }
+                return;
+              } catch (refreshError) {
+                set({
+                  error:
+                    refreshError instanceof Error
+                      ? refreshError.message
+                      : 'Не удалось обновить GitHub App token.',
+                });
+              } finally {
+                activeAuthRetries.delete('issues');
+              }
+            }
             get().logout();
             set({ error: 'Сессия GitHub истекла. Войдите снова; данные сохранены.' });
             return;
@@ -931,6 +1061,7 @@ export const useAppStore = create<AppState>((set, get) => {
 
       const activeAccountId = assertAccountId(accountId);
       const repositoryFullName = input.repositoryFullName as string;
+      if (!ensureRepositoryWritable(repositoryFullName)) return;
       const clientLocalId = crypto.randomUUID();
       const userLabels = input.tags.filter((t) => !t.startsWith('kf:') && !t.startsWith('km:'));
       const labels = labelsForMove(
@@ -1037,6 +1168,7 @@ export const useAppStore = create<AppState>((set, get) => {
     updateIssuePlacement: async (key, changes) => {
       const issue = get().issues.find((i) => issueKey(i) === key || i.clientLocalId === key);
       if (!issue || issue.issueNumber < 0) return;
+      if (!ensureRepositoryWritable(issue.repositoryFullName)) return;
 
       const user = get().user;
       if (!user) return;
@@ -1128,6 +1260,7 @@ export const useAppStore = create<AppState>((set, get) => {
 
     updateIssueFields: async (issue, changes) => {
       if (issue.issueNumber < 0) return;
+      if (!ensureRepositoryWritable(issue.repositoryFullName)) return;
       const user = get().user;
       if (!user) return;
       const accountId = assertAccountId(String(user.id));
@@ -1174,6 +1307,7 @@ export const useAppStore = create<AppState>((set, get) => {
 
     moveIssueToQuestion: async (issue) => {
       if (issue.issueNumber < 0) return;
+      if (!ensureRepositoryWritable(issue.repositoryFullName)) return;
       const user = get().user;
       if (!user) return;
       const accountId = assertAccountId(String(user.id));
@@ -1213,6 +1347,9 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     requestConversion: (noteId, context) => {
+      if (context?.repositoryFullName && !ensureRepositoryWritable(context.repositoryFullName)) {
+        return;
+      }
       set({
         conversionDialog: {
           noteId,
@@ -1228,6 +1365,7 @@ export const useAppStore = create<AppState>((set, get) => {
       if (!note) return;
       const user = get().user;
       if (!user) return;
+      if (!ensureRepositoryWritable(draft.repositoryFullName)) return;
       const accountId = assertAccountId(String(user.id));
 
       const cachedLabels = await db.repositoryLabelsCache.get([
@@ -1385,27 +1523,50 @@ export const useAppStore = create<AppState>((set, get) => {
     updatePendingOperation: async (clientLocalId, changes) => {
       const pending = await db.pendingIssues.get(clientLocalId);
       const operation = await db.outbox
-        .where('entityKey')
-        .equals(clientLocalId)
-        .and((item) => item.accountId === pending?.accountId)
+        .where('accountId')
+        .equals(pending?.accountId || '')
+        .and(
+          (item) =>
+            item.entityKey === clientLocalId ||
+            Boolean(
+              pending?.migrationGroupId && item.migrationGroupId === pending.migrationGroupId,
+            ),
+        )
         .first();
       if (!pending || !operation) return;
+      if (pending.migrationGroupId) {
+        set({
+          error:
+            'Эта карточка связана с несколькими legacy-операциями. Проверьте GitHub, отмените группу и создайте Issue заново.',
+        });
+        return;
+      }
       if (operation.state === 'syncing') {
         set({ error: 'Нельзя изменить операцию во время отправки.' });
         return;
       }
       const repositoryFullName = changes.repositoryFullName || pending.repositoryFullName;
+      const repository = get().repositories.find((item) => item.fullName === repositoryFullName);
+      if (repository && !repository.permissions.push) {
+        set({ error: `Репозиторий ${repositoryFullName} доступен только для чтения.` });
+        return;
+      }
+      const derivedStatus = changes.status ?? pending.derivedStatus;
+      const derivedPriority = changes.priority ?? pending.derivedPriority;
+      const userLabels = changes.labels ?? visibleLabels(pending.labels).map((label) => label.name);
+      const finalLabels = labelsForMove(userLabels, derivedStatus, derivedPriority);
       const updatedPending: PendingIssue = {
         ...pending,
         repositoryFullName,
         title: changes.title?.trim() || pending.title,
         body: changes.body ?? pending.body,
-        labels: changes.labels
-          ? changes.labels.map((name) => {
-              const existing = pending.labels.find((label) => label.name === name);
-              return existing || { name, color: '8c959f' };
-            })
-          : pending.labels,
+        state: derivedStatus === 'done' ? 'closed' : 'open',
+        derivedStatus,
+        derivedPriority,
+        labels: finalLabels.map((name) => {
+          const existing = pending.labels.find((label) => label.name === name);
+          return existing || { name, color: '8c959f' };
+        }),
         assignees: changes.assignees ?? pending.assignees,
         updatedAt: new Date().toISOString(),
         needsAttention: false,
@@ -1418,23 +1579,43 @@ export const useAppStore = create<AppState>((set, get) => {
           ...operation.payload,
           title: updatedPending.title,
           body: updatedPending.body,
-          labels: updatedPending.labels.map((label) => label.name),
+          labels: finalLabels,
           assignees: updatedPending.assignees,
+          state: updatedPending.state,
           clientLocalId,
         },
-        state: 'pending',
+        state: operation.ambiguityRisk ? 'attention' : 'pending',
         requestStarted: false,
         attemptCount: 0,
         nextAttemptAt: undefined,
         lastError: undefined,
         updatedAt: new Date().toISOString(),
       };
-      await db.transaction('rw', db.pendingIssues, db.outbox, async () => {
+      let normalizedTabs: WorkspaceTab[] = [];
+      await db.transaction('rw', db.pendingIssues, db.outbox, db.tabs, async () => {
         await db.pendingIssues.put(updatedPending);
         await db.outbox.put(updatedOperation);
+        const accountTabs = await db.tabs.where('accountId').equals(pending.accountId).toArray();
+        normalizedTabs = ensureDefaultTab(
+          accountTabs.map((tab) =>
+            tab.entity.kind === 'pending-issue' && tab.entity.clientLocalId === clientLocalId
+              ? {
+                  ...tab,
+                  entity: {
+                    ...tab.entity,
+                    repositoryFullName,
+                  },
+                  title: updatedPending.title,
+                }
+              : tab,
+          ),
+          pending.accountId,
+        );
+        await db.tabs.where('accountId').equals(pending.accountId).delete();
+        await db.tabs.bulkPut(normalizedTabs);
       });
       const cached = await loadGitHubAccountState(pending.accountId);
-      set({ ...cached, error: null });
+      set({ ...cached, tabs: normalizedTabs, error: null });
       if (!updatedOperation.ambiguityRisk) await outboxProcessor.process();
     },
     cancelPendingOperation: async (clientLocalId) => {
@@ -1443,9 +1624,15 @@ export const useAppStore = create<AppState>((set, get) => {
       let normalizedTabs: WorkspaceTab[] = [];
       await db.transaction('rw', db.pendingIssues, db.outbox, db.tabs, async () => {
         const operations = await db.outbox
-          .where('entityKey')
-          .equals(clientLocalId)
-          .and((operation) => operation.accountId === pending.accountId)
+          .where('accountId')
+          .equals(pending.accountId)
+          .and(
+            (operation) =>
+              operation.entityKey === clientLocalId ||
+              Boolean(
+                pending.migrationGroupId && operation.migrationGroupId === pending.migrationGroupId,
+              ),
+          )
           .toArray();
         await db.outbox.bulkDelete(operations.map((operation) => operation.id));
         await db.pendingIssues.delete(clientLocalId);

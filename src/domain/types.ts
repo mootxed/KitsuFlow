@@ -101,6 +101,8 @@ export interface PendingIssue {
   needsAttention?: boolean | undefined;
   /** Безопасная диагностика миграции, не содержащая секретов. */
   migrationDiagnostic?: string | undefined;
+  /** Связывает карточку со всеми кандидатами неоднозначной legacy-миграции. */
+  migrationGroupId?: string | undefined;
 }
 
 export interface Repository {
@@ -174,6 +176,8 @@ export interface OutboxOperation {
   createdIssueNodeId?: string | undefined;
   /** POST мог завершиться на GitHub, хотя клиент не получил ответ. */
   ambiguityRisk?: boolean | undefined;
+  /** Группа кандидатов, которые нельзя автоматически выполнять после миграции. */
+  migrationGroupId?: string | undefined;
 }
 
 export interface GitHubUser {

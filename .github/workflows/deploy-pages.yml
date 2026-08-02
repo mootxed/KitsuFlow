@@ -29,6 +29,26 @@ jobs:
           node-version: 22
           cache: pnpm
       - uses: actions/configure-pages@v5
+      - name: Validate GitHub App OAuth configuration
+        env:
+          VITE_GITHUB_CLIENT_ID: ${{ vars.VITE_GITHUB_CLIENT_ID }}
+          VITE_OAUTH_PROXY_URL: ${{ vars.VITE_OAUTH_PROXY_URL }}
+        run: |
+          if [ -z "$VITE_GITHUB_CLIENT_ID" ]; then
+            echo "::error::Missing required Actions Variable VITE_GITHUB_CLIENT_ID"
+            exit 1
+          fi
+          if [ -z "$VITE_OAUTH_PROXY_URL" ]; then
+            echo "::error::Missing required Actions Variable VITE_OAUTH_PROXY_URL"
+            exit 1
+          fi
+          case "$VITE_OAUTH_PROXY_URL" in
+            https://*) ;;
+            *)
+              echo "::error::VITE_OAUTH_PROXY_URL must use HTTPS"
+              exit 1
+              ;;
+          esac
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
         env:

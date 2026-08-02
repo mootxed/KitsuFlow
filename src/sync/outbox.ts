@@ -10,7 +10,7 @@ import { markRepositoryMutation } from './repository-revisions';
 
 export type SyncEvent =
   | { type: 'changed' }
-  | { type: 'unauthorized' }
+  | { type: 'unauthorized'; operationId: string }
   | { type: 'rate-limited'; retryAt: string }
   | { type: 'permission-denied'; message: string };
 
@@ -25,6 +25,8 @@ export class OutboxProcessor {
   private currentProcessPromise: Promise<void> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly instanceId = crypto.randomUUID();
+  private lifecycleGeneration = 0;
+  private activeAbortController: AbortController | null = null;
 
   private readonly getApi: () => GitHubApi | null;
   private readonly getActiveAccountId: () => string | null;
@@ -67,6 +69,10 @@ export class OutboxProcessor {
   }
 
   public destroy(): void {
+    this.lifecycleGeneration += 1;
+    this.activeAbortController?.abort();
+    this.activeAbortController = null;
+    this.currentProcessPromise = null;
     if (this.retryTimer) {
       clearTimeout(this.retryTimer);
       this.retryTimer = null;
@@ -129,6 +135,11 @@ export class OutboxProcessor {
   async retry(id: string, confirmAmbiguous = false): Promise<void> {
     const existing = await db.outbox.get(id);
     if (!existing) return;
+    if (existing.migrationGroupId) {
+      throw new Error(
+        'Неоднозначную legacy-группу нельзя отправить автоматически. Проверьте GitHub и отмените группу.',
+      );
+    }
     if (existing.ambiguityRisk && !confirmAmbiguous) {
       throw new Error(
         'Issue мог уже создаться. Сначала проверьте репозиторий и подтвердите повторный POST.',
@@ -156,16 +167,20 @@ export class OutboxProcessor {
       return this.currentProcessPromise;
     }
 
-    this.currentProcessPromise = this.runLoop().finally(() => {
-      this.currentProcessPromise = null;
+    const generation = this.lifecycleGeneration;
+    const processPromise = this.runLoop(generation).finally(() => {
+      if (this.currentProcessPromise === processPromise) this.currentProcessPromise = null;
+      if (generation !== this.lifecycleGeneration) return;
       void this.scheduleNextRetry();
       this.onEvent({ type: 'changed' });
     });
+    this.currentProcessPromise = processPromise;
 
     return this.currentProcessPromise;
   }
 
-  private async runLoop(): Promise<void> {
+  private async runLoop(generation: number): Promise<void> {
+    if (generation !== this.lifecycleGeneration) return;
     if (!navigator.onLine) return;
     const activeAccountId = this.getActiveAccountId();
     if (!activeAccountId) return;
@@ -178,22 +193,37 @@ export class OutboxProcessor {
         { ifAvailable: true },
         async (lock) => {
           if (!lock) return;
-          await this.executeLoop(api, activeAccountId);
+          await this.executeLoop(api, activeAccountId, generation);
         },
       );
     } else {
-      await this.executeLoop(api, activeAccountId);
+      await this.executeLoop(api, activeAccountId, generation);
     }
   }
 
-  private async executeLoop(api: GitHubApi, activeAccountId: string): Promise<void> {
+  private async executeLoop(
+    api: GitHubApi,
+    activeAccountId: string,
+    generation: number,
+  ): Promise<void> {
+    if (generation !== this.lifecycleGeneration) return;
     await this.recoverStaleSyncing(activeAccountId);
 
-    while (navigator.onLine && this.getApi() && this.getActiveAccountId() === activeAccountId) {
+    while (
+      generation === this.lifecycleGeneration &&
+      navigator.onLine &&
+      this.getApi() === api &&
+      this.getActiveAccountId() === activeAccountId
+    ) {
       const operations = await db.outbox
         .where('accountId')
         .equals(activeAccountId)
-        .and((op) => op.state === 'pending' || op.state === 'failed')
+        .and(
+          (op) =>
+            (op.state === 'pending' || op.state === 'failed') &&
+            !op.ambiguityRisk &&
+            !op.migrationGroupId,
+        )
         .sortBy('createdAt');
 
       const readyOperation = operations.find((op) => {
@@ -205,7 +235,12 @@ export class OutboxProcessor {
 
       if (!readyOperation) break;
 
-      const shouldContinue = await this.claimAndExecute(api, readyOperation.id, activeAccountId);
+      const shouldContinue = await this.claimAndExecute(
+        api,
+        readyOperation.id,
+        activeAccountId,
+        generation,
+      );
       if (!shouldContinue) break;
     }
   }
@@ -240,6 +275,7 @@ export class OutboxProcessor {
         } else if (op.requestStarted) {
           await db.outbox.update(op.id, {
             state: 'attention',
+            ambiguityRisk: true,
             lastError:
               'Операция создания прервана во время запроса. Проверьте GitHub перед повтором во избежание дубликата.',
             claimedAt: undefined,
@@ -308,15 +344,19 @@ export class OutboxProcessor {
     api: GitHubApi,
     operationId: string,
     activeAccountId: string,
+    generation: number,
   ): Promise<boolean> {
+    if (generation !== this.lifecycleGeneration) return false;
     let claimedOperation: OutboxOperation | null = null;
     const now = new Date();
     const leaseExpiresAt = new Date(now.getTime() + 30_000).toISOString();
 
     await db.transaction('rw', db.outbox, async () => {
       const op = await db.outbox.get(operationId);
+      if (generation !== this.lifecycleGeneration) return;
       if (!op) return;
       if (op.accountId !== activeAccountId) return;
+      if (op.ambiguityRisk || op.migrationGroupId) return;
       if (op.state !== 'pending' && op.state !== 'failed') return;
       if (
         op.state === 'failed' &&
@@ -346,13 +386,35 @@ export class OutboxProcessor {
     });
 
     if (!claimedOperation) return true;
-
-    return this.execute(api, claimedOperation);
+    const controller = new AbortController();
+    this.activeAbortController = controller;
+    try {
+      return await this.execute(api, claimedOperation, generation, controller.signal);
+    } finally {
+      if (this.activeAbortController === controller) this.activeAbortController = null;
+    }
   }
 
-  private async execute(api: GitHubApi, operation: OutboxOperation): Promise<boolean> {
+  private async execute(
+    api: GitHubApi,
+    operation: OutboxOperation,
+    generation: number,
+    signal: AbortSignal,
+  ): Promise<boolean> {
     assertAccountId(operation.accountId);
+    const assertActive = (): void => {
+      if (
+        signal.aborted ||
+        generation !== this.lifecycleGeneration ||
+        this.getApi() !== api ||
+        this.getActiveAccountId() !== operation.accountId
+      ) {
+        throw new DOMException('Outbox operation was cancelled', 'AbortError');
+      }
+    };
+    assertActive();
     let heartbeatInterval: ReturnType<typeof setInterval> | null = setInterval(() => {
+      if (generation !== this.lifecycleGeneration || signal.aborted) return;
       void db.outbox
         .update(operation.id, {
           leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
@@ -369,12 +431,17 @@ export class OutboxProcessor {
 
         // ЭТАП 1: Выполнить POST только если issueNumber ещё не получен
         if (!issueNumber) {
-          const newIssue = await api.createIssue(operation.repositoryFullName, {
-            title: String(operation.payload.title || ''),
-            body: String(operation.payload.body || ''),
-            labels: (operation.payload.labels as string[]) || [],
-            assignees: (operation.payload.assignees as string[]) || [],
-          });
+          const newIssue = await api.createIssue(
+            operation.repositoryFullName,
+            {
+              title: String(operation.payload.title || ''),
+              body: String(operation.payload.body || ''),
+              labels: (operation.payload.labels as string[]) || [],
+              assignees: (operation.payload.assignees as string[]) || [],
+            },
+            signal,
+          );
+          assertActive();
 
           issueNumber = newIssue.issueNumber;
           nodeId = newIssue.nodeId;
@@ -401,13 +468,20 @@ export class OutboxProcessor {
             updatedAt: new Date().toISOString(),
           });
 
-          const updatedIssue = await api.updateIssue(operation.repositoryFullName, issueNumber, {
-            state: 'closed',
-          });
+          const updatedIssue = await api.updateIssue(
+            operation.repositoryFullName,
+            issueNumber,
+            {
+              state: 'closed',
+            },
+            signal,
+          );
+          assertActive();
           createdIssue = { ...updatedIssue, accountId: operation.accountId };
         } else if (!createdIssue) {
           // Прочитать актуальный Issue если POST был сделан ранее
-          const fetched = await api.getIssues(operation.repositoryFullName);
+          const fetched = await api.getIssues(operation.repositoryFullName, signal);
+          assertActive();
           const found = fetched.find((i) => i.issueNumber === issueNumber);
           if (found) {
             createdIssue = { ...found, accountId: operation.accountId };
@@ -441,6 +515,7 @@ export class OutboxProcessor {
         };
         const clientLocalId = operation.payload.clientLocalId as string | undefined;
 
+        assertActive();
         await db.transaction(
           'rw',
           db.githubIssuesCache,
@@ -519,13 +594,19 @@ export class OutboxProcessor {
         }
       } else if (operation.type === 'update_issue') {
         const issueNumber = Number(operation.payload.issueNumber);
-        const issue = await api.updateIssue(operation.repositoryFullName, issueNumber, {
-          title: operation.payload.title as string | undefined,
-          body: operation.payload.body as string | undefined,
-          labels: operation.payload.labels as string[] | undefined,
-          assignees: operation.payload.assignees as string[] | undefined,
-          state: operation.payload.state as 'open' | 'closed' | undefined,
-        });
+        const issue = await api.updateIssue(
+          operation.repositoryFullName,
+          issueNumber,
+          {
+            title: operation.payload.title as string | undefined,
+            body: operation.payload.body as string | undefined,
+            labels: operation.payload.labels as string[] | undefined,
+            assignees: operation.payload.assignees as string[] | undefined,
+            state: operation.payload.state as 'open' | 'closed' | undefined,
+          },
+          signal,
+        );
+        assertActive();
 
         const finalIssue: GitHubIssue = {
           ...issue,
@@ -543,9 +624,13 @@ export class OutboxProcessor {
         );
       } else if (operation.type === 'close_and_copy') {
         const issueNumber = Number(operation.payload.issueNumber);
-        const issue = await api.updateIssue(operation.repositoryFullName, issueNumber, {
-          state: 'closed',
-        });
+        const issue = await api.updateIssue(
+          operation.repositoryFullName,
+          issueNumber,
+          { state: 'closed' },
+          signal,
+        );
+        assertActive();
         const finalIssue: GitHubIssue = {
           ...issue,
           accountId: assertAccountId(operation.accountId),
@@ -576,6 +661,23 @@ export class OutboxProcessor {
 
       return true;
     } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        const isCreate = operation.type === 'create_issue' || operation.type === 'convert_note';
+        await db.outbox.update(operation.id, {
+          state: isCreate && operation.requestStarted ? 'attention' : 'pending',
+          requestStarted: isCreate && operation.requestStarted,
+          ambiguityRisk: isCreate && operation.requestStarted ? true : operation.ambiguityRisk,
+          lastError:
+            isCreate && operation.requestStarted
+              ? 'Отправка была прервана выходом из аккаунта. Issue мог создаться; проверьте GitHub перед повтором.'
+              : 'Операция остановлена при выходе и будет безопасно продолжена после входа.',
+          claimedAt: undefined,
+          leaseOwner: undefined,
+          leaseExpiresAt: undefined,
+          updatedAt: new Date().toISOString(),
+        });
+        return false;
+      }
       const parsed = parseGitHubError(error);
       const message = parsed.message;
 
@@ -585,7 +687,7 @@ export class OutboxProcessor {
           lastError: 'Сессия GitHub истекла. Войдите снова.',
           updatedAt: new Date().toISOString(),
         });
-        this.onEvent({ type: 'unauthorized' });
+        this.onEvent({ type: 'unauthorized', operationId: operation.id });
         return false;
       }
 

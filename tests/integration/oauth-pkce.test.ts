@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  buildAuthUrl,
   cleanOAuthCallbackUrl,
   exchangeCode,
   generatePkce,
   parseCallback,
+  refreshAccessToken,
 } from '../../src/github/oauth-pkce';
 
 describe('PKCE OAuth', () => {
@@ -18,6 +20,9 @@ describe('PKCE OAuth', () => {
     expect(first.codeVerifier.length).toBeGreaterThanOrEqual(43);
     expect(first.codeVerifier.length).toBeLessThanOrEqual(128);
     expect(first.oauthState).not.toBe(second.oauthState);
+    const url = new URL(await buildAuthUrl('Iv1.github-app-client', first));
+    expect(url.searchParams.get('scope')).toBeNull();
+    expect(url.searchParams.get('code_challenge_method')).toBe('S256');
   });
 
   it('parses callback denial and removes all callback parameters without losing hash', () => {
@@ -36,19 +41,57 @@ describe('PKCE OAuth', () => {
   it('sends code, verifier and redirect_uri only to configured proxy', async () => {
     vi.stubEnv('VITE_OAUTH_PROXY_URL', 'https://oauth-proxy.test/exchange');
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ access_token: 'token-from-worker' }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
+      new Response(
+        JSON.stringify({
+          access_token: 'token-from-worker',
+          expires_in: 28_800,
+          refresh_session_id: 'opaque-refresh-session',
+          refresh_session_expires_in: 15_897_600,
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
     );
-    const token = await exchangeCode('oauth-code', 'v'.repeat(64));
-    expect(token).toBe('token-from-worker');
+    const credentials = await exchangeCode('oauth-code', 'v'.repeat(64));
+    expect(credentials).toMatchObject({
+      accessToken: 'token-from-worker',
+      refreshSessionId: 'opaque-refresh-session',
+    });
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls[0]?.[0]).toBe('https://oauth-proxy.test/exchange');
     const init = fetchMock.mock.calls[0]?.[1];
     expect(JSON.parse(String(init?.body))).toMatchObject({
+      action: 'exchange',
       code: 'oauth-code',
       code_verifier: 'v'.repeat(64),
     });
+  });
+
+  it('refreshes through an opaque Worker session without exposing a GitHub refresh token', async () => {
+    vi.stubEnv('VITE_OAUTH_PROXY_URL', 'https://oauth-proxy.test/exchange');
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          access_token: 'rotated-access-token',
+          expires_in: 28_800,
+          refresh_session_id: 'opaque-refresh-session',
+          refresh_session_expires_in: 15_897_600,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const refreshed = await refreshAccessToken({
+      accessToken: 'expired-access-token',
+      expiresAt: Date.now() - 1,
+      refreshSessionId: 'opaque-refresh-session',
+    });
+
+    expect(refreshed.accessToken).toBe('rotated-access-token');
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body).toEqual({ action: 'refresh', refresh_session_id: 'opaque-refresh-session' });
+    expect(JSON.stringify(body)).not.toContain('refresh_token');
   });
 });

@@ -312,4 +312,84 @@ describe('IndexedDB schema v5 → v6', () => {
     upgraded.close();
     await Dexie.delete(name);
   });
+
+  it('quarantines every candidate when a legacy pending Issue matches multiple creates', async () => {
+    const name = `kitsuflow-v5-ambiguous-${crypto.randomUUID()}`;
+    const old = new Dexie(name);
+    old.version(5).stores({
+      localNotes: 'id, status, repositoryFullName, updatedAt, syncState, accountId',
+      githubIssuesCache:
+        '[accountId+repositoryFullName+issueNumber], accountId, repositoryFullName, derivedStatus, updatedAt, syncState, clientLocalId',
+      pendingIssues: 'clientLocalId, accountId, repositoryFullName, createdAt',
+      repositoriesCache:
+        '[accountId+fullName], accountId, fullName, pinned, installationId, updatedAt',
+      repositoryLabelsCache:
+        '[accountId+repositoryFullName], accountId, repositoryFullName, cachedAt',
+      repositoryAssigneesCache:
+        '[accountId+repositoryFullName], accountId, repositoryFullName, cachedAt',
+      outbox:
+        'id, type, entityKey, state, repositoryFullName, accountId, createdAt, nextAttemptAt, leaseExpiresAt',
+      tabs: 'id, accountId, active, position',
+      settings: 'key',
+      syncMetadata: 'key, accountId, updatedAt',
+    });
+    await old.open();
+    const now = '2026-08-01T00:00:00Z';
+    await old.table('githubIssuesCache').put({
+      repositoryFullName: 'acme/repo',
+      nodeId: 'temporary',
+      issueNumber: -1,
+      title: 'Ambiguous legacy create',
+      body: '',
+      state: 'open',
+      derivedStatus: 'todo',
+      derivedPriority: 'none',
+      labels: [],
+      assignees: [],
+      htmlUrl: '',
+      createdAt: now,
+      updatedAt: now,
+      cachedAt: now,
+      syncState: 'pending',
+      statusConflict: false,
+      priorityConflict: false,
+      accountId: '1001',
+    });
+    await old.table('outbox').bulkPut(
+      ['candidate-a', 'candidate-b'].map((id) => ({
+        id,
+        type: 'create_issue',
+        entityKey: id,
+        repositoryFullName: 'acme/repo',
+        payload: { title: 'Ambiguous legacy create' },
+        state: 'pending',
+        requestStarted: false,
+        attemptCount: 0,
+        createdAt: now,
+        updatedAt: now,
+        accountId: '1001',
+      })),
+    );
+    old.close();
+
+    const upgraded = new KitsuFlowDatabase(name);
+    await upgraded.open();
+    const pending = (await upgraded.pendingIssues.toArray())[0];
+    const candidates = await upgraded.outbox.toArray();
+
+    expect(pending).toMatchObject({ needsAttention: true });
+    expect(pending?.migrationGroupId).toBeTruthy();
+    expect(candidates).toHaveLength(2);
+    expect(
+      candidates.every(
+        (operation) =>
+          operation.state === 'attention' &&
+          operation.ambiguityRisk === true &&
+          operation.migrationGroupId === pending?.migrationGroupId,
+      ),
+    ).toBe(true);
+
+    upgraded.close();
+    await Dexie.delete(name);
+  });
 });

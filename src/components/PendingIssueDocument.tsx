@@ -6,7 +6,10 @@ import {
   PRIORITY_LABELS,
   STATUS_LABELS,
   type PendingIssue,
+  type IssuePriority,
+  type TaskStatus,
 } from '../domain/types';
+import { visibleLabels } from '../domain/github-mapping';
 import { useAppStore } from '../state/app-store';
 
 export function PendingIssueContent({
@@ -17,7 +20,11 @@ export function PendingIssueContent({
   embedded?: boolean;
 }) {
   const operation = useAppStore((state) =>
-    state.outbox.find((item) => item.entityKey === pending.clientLocalId),
+    state.outbox.find(
+      (item) =>
+        item.entityKey === pending.clientLocalId ||
+        Boolean(pending.migrationGroupId && item.migrationGroupId === pending.migrationGroupId),
+    ),
   );
   const repositories = useAppStore((state) => state.repositories);
   const updatePendingOperation = useAppStore((state) => state.updatePendingOperation);
@@ -27,18 +34,30 @@ export function PendingIssueContent({
   const [title, setTitle] = useState(pending.title);
   const [body, setBody] = useState(pending.body);
   const [repositoryFullName, setRepositoryFullName] = useState(pending.repositoryFullName);
-  const [labels, setLabels] = useState(pending.labels.map((label) => label.name).join(', '));
+  const [labels, setLabels] = useState(
+    visibleLabels(pending.labels)
+      .map((label) => label.name)
+      .join(', '),
+  );
   const [assignees, setAssignees] = useState(pending.assignees.join(', '));
+  const [status, setStatus] = useState<Exclude<TaskStatus, 'question'>>(pending.derivedStatus);
+  const [priority, setPriority] = useState<IssuePriority>(pending.derivedPriority);
 
   useEffect(() => {
     setTitle(pending.title);
     setBody(pending.body);
     setRepositoryFullName(pending.repositoryFullName);
-    setLabels(pending.labels.map((label) => label.name).join(', '));
+    setLabels(
+      visibleLabels(pending.labels)
+        .map((label) => label.name)
+        .join(', '),
+    );
     setAssignees(pending.assignees.join(', '));
+    setStatus(pending.derivedStatus);
+    setPriority(pending.derivedPriority);
   }, [pending]);
 
-  const editable = Boolean(operation && operation.state !== 'syncing');
+  const editable = Boolean(operation && operation.state !== 'syncing' && !pending.migrationGroupId);
   const list = (value: string) =>
     value
       .split(',')
@@ -51,6 +70,8 @@ export function PendingIssueContent({
       repositoryFullName,
       labels: list(labels),
       assignees: list(assignees),
+      status,
+      priority,
     });
   const repositoryUrl = `https://github.com/${pending.repositoryFullName}/issues?q=${encodeURIComponent(pending.title)}`;
 
@@ -96,16 +117,30 @@ export function PendingIssueContent({
       <div className="field-grid">
         <label>
           Статус
-          <select value={pending.derivedStatus} disabled>
-            <option value={pending.derivedStatus}>{STATUS_LABELS[pending.derivedStatus]}</option>
+          <select
+            value={status}
+            disabled={!editable}
+            onChange={(event) => setStatus(event.target.value as Exclude<TaskStatus, 'question'>)}
+          >
+            {(['todo', 'in_progress', 'done', 'postponed'] as const).map((value) => (
+              <option key={value} value={value}>
+                {STATUS_LABELS[value]}
+              </option>
+            ))}
           </select>
         </label>
         <label>
           Приоритет
-          <select value={pending.derivedPriority} disabled>
-            <option value={pending.derivedPriority}>
-              {PRIORITY_LABELS[pending.derivedPriority]}
-            </option>
+          <select
+            value={priority}
+            disabled={!editable}
+            onChange={(event) => setPriority(event.target.value as IssuePriority)}
+          >
+            {Object.entries(PRIORITY_LABELS).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
           </select>
         </label>
       </div>
@@ -116,11 +151,21 @@ export function PendingIssueContent({
           onChange={(event) => setRepositoryFullName(event.target.value)}
           disabled={!editable}
         >
-          {repositories.map((repository) => (
-            <option key={repository.fullName} value={repository.fullName}>
-              {repository.fullName}
-            </option>
-          ))}
+          {repositories
+            .filter(
+              (repository) =>
+                repository.permissions.push || repository.fullName === pending.repositoryFullName,
+            )
+            .map((repository) => (
+              <option
+                key={repository.fullName}
+                value={repository.fullName}
+                disabled={!repository.permissions.push}
+              >
+                {repository.fullName}
+                {repository.permissions.push ? '' : ' (только чтение)'}
+              </option>
+            ))}
         </select>
       </label>
       <label>
@@ -160,7 +205,7 @@ export function PendingIssueContent({
             <RotateCcw size={14} /> Повторить
           </button>
         )}
-        {operation?.ambiguityRisk && (
+        {operation?.ambiguityRisk && !pending.migrationGroupId && (
           <button
             className="danger"
             onClick={() => {

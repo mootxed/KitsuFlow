@@ -43,6 +43,10 @@ export function DetailsContent({
   }, [note?.id, issue?.nodeId, note?.title, issue?.title, note?.description, issue?.body]);
 
   if (note) {
+    const conversionAllowed =
+      !note.repositoryFullName ||
+      repositories.find((repository) => repository.fullName === note.repositoryFullName)
+        ?.permissions.push !== false;
     const save = () =>
       void updateNote(note.id, { title: title.trim() || note.title, description: body });
     return (
@@ -147,6 +151,8 @@ export function DetailsContent({
             <Save size={14} /> Сохранить
           </button>
           <button
+            disabled={!conversionAllowed}
+            title={conversionAllowed ? undefined : 'Репозиторий доступен только для чтения'}
             onClick={() =>
               requestConversion(note.id, {
                 repositoryFullName: note.repositoryFullName || undefined,
@@ -168,6 +174,9 @@ export function DetailsContent({
     );
   }
   if (!issue) return null;
+  const canWrite =
+    repositories.find((repository) => repository.fullName === issue.repositoryFullName)?.permissions
+      .push !== false;
   const save = () => void updateIssueFields(issue, { title: title.trim() || issue.title, body });
   return (
     <div className={`details-content ${embedded ? 'embedded' : ''}`}>
@@ -179,12 +188,14 @@ export function DetailsContent({
         value={title}
         onChange={(event) => setTitle(event.target.value)}
         aria-label="Название Issue"
+        readOnly={!canWrite}
       />
       <div className="field-grid">
         <label>
           Статус
           <select
             value={issue.derivedStatus}
+            disabled={!canWrite}
             onChange={(event) =>
               void changeIssueStatus(issue, event.target.value as Exclude<TaskStatus, 'question'>)
             }
@@ -200,6 +211,7 @@ export function DetailsContent({
           Приоритет
           <select
             value={issue.derivedPriority}
+            disabled={!canWrite}
             onChange={(event) =>
               void changeIssuePriority(issue, event.target.value as IssuePriority)
             }
@@ -219,6 +231,7 @@ export function DetailsContent({
           rows={embedded ? 14 : 8}
           value={body}
           onChange={(event) => setBody(event.target.value)}
+          readOnly={!canWrite}
         />
       </label>
       <div className="markdown-preview">
@@ -292,8 +305,9 @@ export function DetailsContent({
       <p className={`sync-summary ${issue.syncState}`}>
         Синхронизация: {SYNC_STATE_LABELS[issue.syncState]}
       </p>
+      {!canWrite && <p className="hint">Репозиторий доступен только для чтения.</p>}
       <div className="details-actions">
-        <button className="primary" onClick={save}>
+        <button className="primary" onClick={save} disabled={!canWrite}>
           <Save size={14} /> Сохранить
         </button>
         {issue.htmlUrl && (

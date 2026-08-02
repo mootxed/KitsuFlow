@@ -1,10 +1,10 @@
 /**
  * oauth-pkce.ts
  *
- * PKCE Authorization Code Flow для GitHub OAuth.
+ * PKCE Authorization Code Flow для GitHub App user access token.
  *
- * GitHub OAuth Apps не поддерживают CORS на эндпоинте access_token, поэтому
- * exchange кода нужен server-side через Cloudflare Worker proxy.
+ * Token endpoint не поддерживает browser CORS, поэтому exchange/refresh
+ * выполняются server-side через Cloudflare Worker.
  *
  * Схема:
  *   1. generatePkce()    → code_verifier + code_challenge
@@ -14,6 +14,7 @@
  */
 
 import { APP_CONFIG } from '../config';
+import type { GitHubAuthSession } from './session';
 
 export interface PkceState {
   codeVerifier: string;
@@ -104,7 +105,6 @@ export async function buildAuthUrl(clientId: string, pkce: PkceState): Promise<s
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirectUri,
-    scope: 'repo',
     state: pkce.oauthState,
     code_challenge: codeChallenge,
     code_challenge_method: 'S256',
@@ -147,14 +147,57 @@ export function cleanOAuthCallbackUrl(url: URL): string {
  * Proxy URL задаётся через `VITE_OAUTH_PROXY_URL`.
  * Пример Cloudflare Worker: см. docs/oauth-proxy-setup.md
  *
- * Proxy получает: { code, code_verifier, redirect_uri }
- * Proxy возвращает: { access_token } или { error, error_description }
+ * Proxy сохраняет GitHub refresh token в KV и возвращает клиенту только
+ * access token и непрозрачный идентификатор refresh-сессии.
  */
 export async function exchangeCode(
   code: string,
   codeVerifier: string,
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<GitHubAuthSession> {
+  return requestToken(
+    { action: 'exchange', code, code_verifier: codeVerifier, redirect_uri: buildRedirectUri() },
+    signal,
+  );
+}
+
+export async function refreshAccessToken(
+  current: GitHubAuthSession,
+  signal?: AbortSignal,
+): Promise<GitHubAuthSession> {
+  if (!current.refreshSessionId) {
+    throw new Error('Refresh-сессия GitHub отсутствует. Выполните вход снова.');
+  }
+  return requestToken({ action: 'refresh', refresh_session_id: current.refreshSessionId }, signal);
+}
+
+export async function revokeRefreshSession(
+  current: GitHubAuthSession,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (!current.refreshSessionId) return;
+  const response = await requestProxy(
+    { action: 'logout', refresh_session_id: current.refreshSessionId },
+    signal,
+  );
+  if (!response.ok) throw new Error(`OAuth proxy вернул HTTP ${response.status}.`);
+}
+
+type ProxyRequest =
+  | { action: 'exchange'; code: string; code_verifier: string; redirect_uri: string }
+  | { action: 'refresh'; refresh_session_id: string }
+  | { action: 'logout'; refresh_session_id: string };
+
+interface ProxyTokenResponse {
+  access_token?: string;
+  expires_in?: number;
+  refresh_session_id?: string;
+  refresh_session_expires_in?: number;
+  error?: string;
+  error_description?: string;
+}
+
+async function requestProxy(body: ProxyRequest, signal?: AbortSignal): Promise<Response> {
   const proxyUrl = import.meta.env.VITE_OAUTH_PROXY_URL;
   if (!proxyUrl) {
     throw new Error(
@@ -168,14 +211,12 @@ export async function exchangeCode(
     throw new Error('VITE_GITHUB_CLIENT_ID не задан.');
   }
 
-  const redirectUri = buildRedirectUri();
-
   let response: Response;
   try {
     response = await fetch(proxyUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ code, code_verifier: codeVerifier, redirect_uri: redirectUri }),
+      body: JSON.stringify(body),
       signal: signal ?? null,
     });
   } catch (fetchError) {
@@ -185,23 +226,40 @@ export async function exchangeCode(
     );
   }
 
-  if (!response.ok) {
-    throw new Error(`OAuth proxy вернул HTTP ${response.status}.`);
+  return response;
+}
+
+async function requestToken(
+  body: Extract<ProxyRequest, { action: 'exchange' | 'refresh' }>,
+  signal?: AbortSignal,
+): Promise<GitHubAuthSession> {
+  const response = await requestProxy(body, signal);
+  let data: ProxyTokenResponse;
+  try {
+    data = (await response.json()) as ProxyTokenResponse;
+  } catch {
+    throw new Error(`OAuth proxy вернул некорректный ответ (HTTP ${response.status}).`);
   }
 
-  const data = (await response.json()) as {
-    access_token?: string;
-    error?: string;
-    error_description?: string;
-  };
-
-  if (data.error) {
-    throw new Error(data.error_description || data.error);
+  if (!response.ok || data.error) {
+    throw new Error(
+      data.error_description || data.error || `OAuth proxy вернул HTTP ${response.status}.`,
+    );
   }
 
   if (!data.access_token) {
     throw new Error('OAuth proxy не вернул access_token.');
   }
 
-  return data.access_token;
+  const now = Date.now();
+  return {
+    accessToken: data.access_token,
+    expiresAt:
+      typeof data.expires_in === 'number' ? now + Math.max(0, data.expires_in) * 1000 : undefined,
+    refreshSessionId: data.refresh_session_id,
+    refreshSessionExpiresAt:
+      typeof data.refresh_session_expires_in === 'number'
+        ? now + Math.max(0, data.refresh_session_expires_in) * 1000
+        : undefined,
+  };
 }

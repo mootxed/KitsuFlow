@@ -28,9 +28,54 @@ describe('GitHub API layer', () => {
         }),
       ),
     );
-    const repos = await new GitHubApi('test-token').getRepositories();
-    expect(repos).toHaveLength(1);
-    expect(repos[0]?.fullName).toBe('acme/repo');
+    const result = await new GitHubApi('test-token').getRepositories();
+    expect(result.failedInstallations).toEqual([]);
+    expect(result.repositories).toHaveLength(1);
+    expect(result.repositories[0]?.fullName).toBe('acme/repo');
+  });
+
+  it('paginates installations and isolates a failed installation', async () => {
+    server.use(
+      http.get('https://api.github.com/user/installations', ({ request }) => {
+        const page = new URL(request.url).searchParams.get('page');
+        if (page === '2') {
+          return HttpResponse.json({
+            total_count: 2,
+            installations: [{ id: 8, account: { login: 'broken' } }],
+          });
+        }
+        return HttpResponse.json(
+          {
+            total_count: 2,
+            installations: [{ id: 7, account: { login: 'acme' } }],
+          },
+          { headers: { Link: '<https://api.github.com/user/installations?page=2>; rel="next"' } },
+        );
+      }),
+      http.get('https://api.github.com/user/installations/7/repositories', () =>
+        HttpResponse.json({
+          total_count: 1,
+          repositories: [
+            {
+              id: 1,
+              full_name: 'acme/repo',
+              name: 'repo',
+              private: false,
+              owner: { login: 'acme' },
+              permissions: { pull: true, push: true },
+            },
+          ],
+        }),
+      ),
+      http.get('https://api.github.com/user/installations/8/repositories', () =>
+        HttpResponse.json({ message: 'Forbidden' }, { status: 403 }),
+      ),
+    );
+
+    const result = await new GitHubApi('test-token').getRepositories();
+    expect(result.installationCount).toBe(2);
+    expect(result.repositories.map((repository) => repository.fullName)).toEqual(['acme/repo']);
+    expect(result.failedInstallations).toMatchObject([{ installationId: 8, account: 'broken' }]);
   });
 
   it('loads issues with pagination and excludes pull requests', async () => {
