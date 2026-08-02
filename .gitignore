@@ -9,3 +9,17 @@ test-results
 *.local
 *.tsbuildinfo
 .codebase-memory/
+
+# Local environment
+.env
+.env.local
+.env.*.local
+
+# Cloudflare Worker local config with KV IDs
+oauth-worker/wrangler.toml
+
+# Wrangler local state
+.wrangler/
+.dev.vars
+oauth-worker/.dev.vars
+oauth-worker/.wrangler/
