@@ -311,6 +311,20 @@ describe('pending actions and note conversion lifecycle', () => {
       tabs: [tab],
       selectedTask: { kind: 'note', id: note.id },
       conversionDialog: { noteId: note.id },
+      repositories: [
+        {
+          fullName: 'acme/repo',
+          name: 'repo',
+          owner: 'acme',
+          isPrivate: false,
+          defaultBranch: 'main',
+          pinned: true,
+          pinnedAt: now,
+          permissions: { push: true },
+          updatedAt: now,
+          accountId: '1001',
+        },
+      ],
     });
 
     await useAppStore.getState().confirmConversion({
@@ -360,11 +374,11 @@ describe('pending actions and note conversion lifecycle', () => {
     await useAppStore.getState().confirmConversion(draft);
 
     const ops = await db.outbox.where('entityKey').equals(note.id).toArray();
-    const activeOps = ops.filter((op) => op.type === 'convert_note' && op.state !== 'done' && op.state !== 'cancelled');
+    const activeOps = ops.filter((op) => op.type === 'convert_note');
     expect(activeOps).toHaveLength(1);
   });
 
-  it('deleteNote cancels the associated pending convert_note operation', async () => {
+  it('deleteNote deletes the associated pending convert_note operation', async () => {
     const note = createLocalNote({ title: 'Will be deleted', description: '', status: 'question', repositoryFullName: 'acme/repo', localTags: [], checklist: [] });
     note.id = 'note-to-delete';
     note.accountId = '1001';
@@ -396,11 +410,11 @@ describe('pending actions and note conversion lifecycle', () => {
     await useAppStore.getState().deleteNote(note.id);
 
     expect(await db.localNotes.get(note.id)).toBeUndefined();
-    const cancelledOp = await db.outbox.get('convert-op-to-cancel');
-    expect(cancelledOp?.state).toBe('cancelled');
+    const deletedOp = await db.outbox.get('convert-op-to-cancel');
+    expect(deletedOp).toBeUndefined();
   });
 
-  it('updateNote syncs title/body into the pending convert_note payload', async () => {
+  it('updateNote ignores updates while note is pending conversion', async () => {
     const note = createLocalNote({ title: 'Original title', description: 'Original body', status: 'question', repositoryFullName: 'acme/repo', localTags: [], checklist: [] });
     note.id = 'note-to-update';
     note.accountId = '1001';
@@ -432,7 +446,7 @@ describe('pending actions and note conversion lifecycle', () => {
     await useAppStore.getState().updateNote(note.id, { title: 'Updated title' });
 
     const updatedOp = await db.outbox.get('convert-op-to-update');
-    expect(updatedOp?.payload.title).toBe('Updated title');
+    expect(updatedOp?.payload.title).toBe('Original title');
   });
 });
 

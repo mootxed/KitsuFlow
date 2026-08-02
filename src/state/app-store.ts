@@ -1131,6 +1131,7 @@ export const useAppStore = create<AppState>((set, get) => {
     updateNote: async (id, changes) => {
       const note = get().notes.find((item) => item.id === id);
       if (!note) return;
+      if (note.syncState === 'pending') return;
       const user = get().user;
       const activeAccountId = user ? String(user.id) : null;
       const updated: LocalNote = { ...note, ...changes, id, updatedAt: new Date().toISOString() };
@@ -1146,8 +1147,6 @@ export const useAppStore = create<AppState>((set, get) => {
             .and(
               (op) =>
                 op.type === 'convert_note' &&
-                op.state !== 'done' &&
-                op.state !== 'cancelled' &&
                 op.accountId === activeAccountId,
             )
             .last();
@@ -1156,7 +1155,7 @@ export const useAppStore = create<AppState>((set, get) => {
               payload: {
                 ...existingConvert.payload,
                 title: updated.title,
-                body: updated.body || existingConvert.payload.body,
+                body: updated.description || existingConvert.payload.body,
               },
               updatedAt: new Date().toISOString(),
             });
@@ -1191,24 +1190,16 @@ export const useAppStore = create<AppState>((set, get) => {
     deleteNote: async (id) => {
       const user = get().user;
       const activeAccountId = user ? String(user.id) : null;
-      // Если для заметки есть активная convert_note операция, аннулируем её
+      // Если для заметки есть активная convert_note операция, удаляем её
       const pendingConvert = await db.outbox
         .where('entityKey')
         .equals(id)
-        .and(
-          (op) =>
-            op.type === 'convert_note' &&
-            op.state !== 'done' &&
-            op.state !== 'cancelled',
-        )
+        .and((op) => op.type === 'convert_note')
         .last();
       await db.transaction('rw', db.localNotes, db.outbox, async () => {
         await db.localNotes.delete(id);
         if (pendingConvert) {
-          await db.outbox.update(pendingConvert.id, {
-            state: 'cancelled',
-            updatedAt: new Date().toISOString(),
-          });
+          await db.outbox.delete(pendingConvert.id);
         }
       });
       const cached = activeAccountId
@@ -1427,8 +1418,6 @@ export const useAppStore = create<AppState>((set, get) => {
         .and(
           (op) =>
             op.type === 'convert_note' &&
-            op.state !== 'done' &&
-            op.state !== 'cancelled' &&
             op.accountId === accountId,
         )
         .last();

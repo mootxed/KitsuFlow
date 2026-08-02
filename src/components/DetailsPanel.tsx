@@ -43,20 +43,28 @@ export function DetailsContent({
   }, [note?.id, issue?.nodeId, note?.title, issue?.title, note?.description, issue?.body]);
 
   if (note) {
+    const isPending = note.syncState === 'pending';
     const conversionAllowed =
-      !note.repositoryFullName ||
-      repositories.find((repository) => repository.fullName === note.repositoryFullName)
-        ?.permissions.push !== false;
+      !isPending &&
+      (!note.repositoryFullName ||
+        repositories.find((repository) => repository.fullName === note.repositoryFullName)
+          ?.permissions.push !== false);
     const save = () =>
       void updateNote(note.id, { title: title.trim() || note.title, description: body });
     return (
       <div className={`details-content ${embedded ? 'embedded' : ''}`}>
         <p className="eyebrow">Локальная заметка</p>
+        {isPending && (
+          <div className="pending-banner">
+            <span>Публикуется как Issue...</span>
+          </div>
+        )}
         <input
           className="title-input"
           value={title}
           onChange={(event) => setTitle(event.target.value)}
           aria-label="Название заметки"
+          readOnly={isPending}
         />
         <label>
           Описание
@@ -64,6 +72,7 @@ export function DetailsContent({
             rows={embedded ? 12 : 7}
             value={body}
             onChange={(event) => setBody(event.target.value)}
+            readOnly={isPending}
           />
         </label>
         <div className="field-grid">
@@ -71,6 +80,7 @@ export function DetailsContent({
             Статус
             <select
               value={note.status}
+              disabled={isPending}
               onChange={(event) =>
                 void updateNote(note.id, { status: event.target.value as TaskStatus })
               }
@@ -94,6 +104,7 @@ export function DetailsContent({
             Репозиторий
             <select
               value={note.repositoryFullName || ''}
+              disabled={isPending}
               onChange={(event) =>
                 void updateNote(note.id, {
                   repositoryFullName: event.target.value || null,
@@ -116,6 +127,7 @@ export function DetailsContent({
           Локальные теги
           <input
             value={note.localTags.join(', ')}
+            disabled={isPending}
             onChange={(event) =>
               void updateNote(note.id, {
                 localTags: event.target.value
@@ -132,6 +144,7 @@ export function DetailsContent({
             value={note.checklist
               .map((item) => `${item.checked ? '[x]' : '[ ]'} ${item.text}`)
               .join('\n')}
+            readOnly={isPending}
             onChange={(event) =>
               void updateNote(note.id, {
                 checklist: event.target.value
@@ -147,12 +160,18 @@ export function DetailsContent({
           />
         </label>
         <div className="details-actions">
-          <button className="primary" onClick={save}>
+          <button className="primary" onClick={save} disabled={isPending}>
             <Save size={14} /> Сохранить
           </button>
           <button
             disabled={!conversionAllowed}
-            title={conversionAllowed ? undefined : 'Репозиторий доступен только для чтения'}
+            title={
+              isPending
+                ? 'Заметка публикуется как Issue'
+                : conversionAllowed
+                  ? undefined
+                  : 'Репозиторий доступен только для чтения'
+            }
             onClick={() =>
               requestConversion(note.id, {
                 repositoryFullName: note.repositoryFullName || undefined,
