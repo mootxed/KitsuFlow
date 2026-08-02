@@ -195,7 +195,27 @@ export class KitsuFlowDatabase extends Dexie {
             .delete();
         }
       });
-    this.version(6)
+    this.version(6).stores({
+      localNotes: 'id, status, repositoryFullName, updatedAt, syncState, accountId',
+      githubIssuesCache:
+        '[accountId+repositoryFullName+issueNumber], accountId, repositoryFullName, derivedStatus, updatedAt, syncState, clientLocalId',
+      pendingIssues:
+        'clientLocalId, accountId, repositoryFullName, createdAt, needsAttention, migrationGroupId',
+      repositoriesCache:
+        '[accountId+fullName], accountId, fullName, pinned, installationId, updatedAt',
+      repositoryLabelsCache:
+        '[accountId+repositoryFullName], accountId, repositoryFullName, cachedAt',
+      repositoryAssigneesCache:
+        '[accountId+repositoryFullName], accountId, repositoryFullName, cachedAt',
+      outbox:
+        'id, type, entityKey, state, repositoryFullName, accountId, createdAt, nextAttemptAt, leaseExpiresAt, ambiguityRisk, migrationGroupId',
+      tabs: 'id, accountId, active, position',
+      settings: 'key',
+      syncMetadata: 'key, accountId, updatedAt',
+    });
+    // v7: переносим upgrade-логику из v6 сюда, чтобы пользователи, открывавшие базу
+    // на старом v6 (без этих полей), тоже прошли миграцию pendingIssues/outbox/tabs.
+    this.version(7)
       .stores({
         localNotes: 'id, status, repositoryFullName, updatedAt, syncState, accountId',
         githubIssuesCache:
@@ -227,6 +247,19 @@ export class KitsuFlowDatabase extends Dexie {
           clientLocalId: string;
           title: string;
         }> = [];
+
+        // Стабильный migrationGroupId: вычисляется один раз на уникальный набор candidate IDs.
+        // Если несколько pending-карточек совпадают с теми же кандидатами,
+        // они получают один и тот же groupId (иначе карточки теряли бы связь).
+        const groupIdCache = new Map<string, string>();
+        const getGroupId = (candidateIds: string[]): string => {
+          const key = [...candidateIds].sort().join('\0');
+          const existing = groupIdCache.get(key);
+          if (existing) return existing;
+          const id = crypto.randomUUID();
+          groupIdCache.set(key, id);
+          return id;
+        };
 
         interface PendingResolution {
           clientLocalId: string;
@@ -285,7 +318,10 @@ export class KitsuFlowDatabase extends Dexie {
           const accountId = String(record.accountId || 'legacy-unassigned');
           const repositoryFullName = String(record.repositoryFullName || '');
           const title = String(record.title || 'Временная Issue');
-          const migrationGroupId = resolved.ambiguous ? crypto.randomUUID() : undefined;
+          // Стабильный groupId для одинакового набора кандидатов
+          const migrationGroupId = resolved.ambiguous
+            ? getGroupId(resolved.candidates.map((c) => c.id))
+            : undefined;
           const pending: PendingIssue = {
             clientLocalId: resolved.clientLocalId,
             repositoryFullName,
@@ -408,3 +444,5 @@ export async function clearLocalData(): Promise<void> {
     await Promise.all(db.tables.map((table) => table.clear()));
   });
 }
+
+

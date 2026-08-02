@@ -78,6 +78,58 @@ describe('GitHub API layer', () => {
     expect(result.failedInstallations).toMatchObject([{ installationId: 8, account: 'broken' }]);
   });
 
+  it('throws globally when any installation returns 401 (getRepositories)', async () => {
+    server.use(
+      http.get('https://api.github.com/user/installations', () =>
+        HttpResponse.json({
+          total_count: 1,
+          installations: [{ id: 9, account: { login: 'secured' } }],
+        }),
+      ),
+      http.get('https://api.github.com/user/installations/9/repositories', () =>
+        HttpResponse.json({ message: 'Requires authentication' }, { status: 401 }),
+      ),
+    );
+    await expect(new GitHubApi('bad-token').getRepositories()).rejects.toMatchObject({
+      status: 401,
+    });
+  });
+
+  it('isolates 404 installation into failedInstallations (getRepositories)', async () => {
+    server.use(
+      http.get('https://api.github.com/user/installations', () =>
+        HttpResponse.json({
+          total_count: 2,
+          installations: [
+            { id: 10, account: { login: 'ok' } },
+            { id: 11, account: { login: 'missing' } },
+          ],
+        }),
+      ),
+      http.get('https://api.github.com/user/installations/10/repositories', () =>
+        HttpResponse.json({
+          total_count: 1,
+          repositories: [
+            {
+              id: 2,
+              full_name: 'ok/repo',
+              name: 'repo',
+              private: false,
+              owner: { login: 'ok' },
+              permissions: { pull: true, push: true },
+            },
+          ],
+        }),
+      ),
+      http.get('https://api.github.com/user/installations/11/repositories', () =>
+        HttpResponse.json({ message: 'Not Found' }, { status: 404 }),
+      ),
+    );
+    const result = await new GitHubApi('test-token').getRepositories();
+    expect(result.repositories).toHaveLength(1);
+    expect(result.failedInstallations).toMatchObject([{ installationId: 11, account: 'missing' }]);
+  });
+
   it('loads issues with pagination and excludes pull requests', async () => {
     server.use(
       http.get('https://api.github.com/repos/acme/repo/issues', () =>

@@ -165,9 +165,32 @@ export default {
         const { response, result } = await exchangeWithGitHub(env, {
           refreshToken: stored.refreshToken,
         });
+        // Terminal-ошибка: GitHub явно отверг refresh token (недействительный, истёкший)
+        const isTerminalError = (r: typeof result): boolean => {
+          const errCode = r.error || '';
+          return (
+            errCode === 'bad_verification_code' ||
+            errCode === 'invalid_grant' ||
+            errCode.includes('expir') ||
+            errCode === 'incorrect_client_credentials'
+          );
+        };
         if (!response.ok || result.error || !result.access_token) {
-          await env.OAUTH_SESSIONS.delete(body.refresh_session_id);
-          return json(origin, { error: result.error || 'token_refresh_failed' }, 401);
+          if (isTerminalError(result)) {
+            // Терминальная ошибка: удаляем KV, refresh невозможен
+            await env.OAUTH_SESSIONS.delete(body.refresh_session_id);
+            return json(origin, { error: result.error || 'token_refresh_failed' }, 401);
+          }
+          // Временная ошибка (5xx, 429, сеть): сохраняем KV, предлагаем повторить
+          const retryAfter =
+            response.status === 429
+              ? Number(response.headers.get('retry-after') || 60)
+              : 30;
+          return json(
+            origin,
+            { error: 'token_refresh_unavailable', retry_after: retryAfter },
+            503,
+          );
         }
         const refresh = await persistRefreshToken(env, result, body.refresh_session_id);
         if (!refresh.sessionId && result.expires_in) {

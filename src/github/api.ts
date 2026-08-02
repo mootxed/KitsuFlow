@@ -7,6 +7,7 @@ import {
   type ApiIssue,
 } from '../domain/github-mapping';
 import type { GitHubIssue, GitHubUser, IssueLabel, Repository, TaskStatus } from '../domain/types';
+import { parseGitHubError } from './errors';
 
 interface InstallationRecord {
   id: number;
@@ -98,8 +99,15 @@ export class GitHubApi {
     groups.forEach((result, index) => {
       const installation = installations[index];
       if (!installation) return;
-      if (result.status === 'fulfilled') repositories.push(...result.value);
-      else {
+      if (result.status === 'fulfilled') {
+        repositories.push(...result.value);
+      } else {
+        const parsed = parseGitHubError(result.reason);
+        // 401 и глобальный rate-limit — критические ошибки, пробрасываем наверх
+        if (parsed.kind === 'unauthorized' || parsed.kind === 'rate-limit') {
+          throw result.reason;
+        }
+        // Локальные ошибки (403, 404, сеть) остаются в failedInstallations
         failedInstallations.push({
           installationId: installation.id,
           account: installation.account,

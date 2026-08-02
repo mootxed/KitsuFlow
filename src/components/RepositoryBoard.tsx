@@ -61,8 +61,10 @@ function QuestionDrop({
 export function RepositoryBoard({ repositoryFullName }: { repositoryFullName: string }) {
   const canWrite = useAppStore(
     (state) =>
-      state.repositories.find((repository) => repository.fullName === repositoryFullName)
-        ?.permissions.push !== false,
+      Boolean(
+        state.repositories.find((repository) => repository.fullName === repositoryFullName)
+          ?.permissions.push,
+      ),
   );
   const issues = useAppStore(
     useShallow((state) =>

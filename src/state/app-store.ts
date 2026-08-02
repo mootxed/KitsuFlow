@@ -382,7 +382,11 @@ export const useAppStore = create<AppState>((set, get) => {
   const activeAuthRetries = new Set<'repositories' | 'issues'>();
   const ensureRepositoryWritable = (repositoryFullName: string): boolean => {
     const repository = get().repositories.find((item) => item.fullName === repositoryFullName);
-    if (!repository || repository.permissions.push) return true;
+    if (!repository) {
+      set({ error: `Репозиторий ${repositoryFullName} больше недоступен или не найден в текущей сессии.` });
+      return false;
+    }
+    if (repository.permissions.push) return true;
     set({ error: `Репозиторий ${repositoryFullName} доступен только для чтения.` });
     return false;
   };
@@ -1134,6 +1138,30 @@ export const useAppStore = create<AppState>((set, get) => {
       if (updated.repositoryFullName && updated.status === 'question') {
         updated.accountId = activeAccountId || 'legacy-unassigned';
         await db.localNotes.put(updated);
+        // Если есть pending convert_note, обновляем его payload
+        if (updated.syncState === 'pending' && activeAccountId) {
+          const existingConvert = await db.outbox
+            .where('entityKey')
+            .equals(id)
+            .and(
+              (op) =>
+                op.type === 'convert_note' &&
+                op.state !== 'done' &&
+                op.state !== 'cancelled' &&
+                op.accountId === activeAccountId,
+            )
+            .last();
+          if (existingConvert) {
+            await db.outbox.update(existingConvert.id, {
+              payload: {
+                ...existingConvert.payload,
+                title: updated.title,
+                body: updated.body || existingConvert.payload.body,
+              },
+              updatedAt: new Date().toISOString(),
+            });
+          }
+        }
         const cached = activeAccountId
           ? await loadGitHubAccountState(activeAccountId)
           : await loadLocalDeviceState();
@@ -1161,8 +1189,32 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     deleteNote: async (id) => {
-      await db.localNotes.delete(id);
-      set({ notes: get().notes.filter((note) => note.id !== id), selectedTask: null });
+      const user = get().user;
+      const activeAccountId = user ? String(user.id) : null;
+      // Если для заметки есть активная convert_note операция, аннулируем её
+      const pendingConvert = await db.outbox
+        .where('entityKey')
+        .equals(id)
+        .and(
+          (op) =>
+            op.type === 'convert_note' &&
+            op.state !== 'done' &&
+            op.state !== 'cancelled',
+        )
+        .last();
+      await db.transaction('rw', db.localNotes, db.outbox, async () => {
+        await db.localNotes.delete(id);
+        if (pendingConvert) {
+          await db.outbox.update(pendingConvert.id, {
+            state: 'cancelled',
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      });
+      const cached = activeAccountId
+        ? await loadGitHubAccountState(activeAccountId)
+        : await loadLocalDeviceState();
+      set({ ...cached, selectedTask: null });
     },
 
     updateIssuePlacement: async (key, changes) => {
@@ -1367,6 +1419,25 @@ export const useAppStore = create<AppState>((set, get) => {
       if (!user) return;
       if (!ensureRepositoryWritable(draft.repositoryFullName)) return;
       const accountId = assertAccountId(String(user.id));
+
+      // Guard: не создавать вторую convert_note для той же заметки
+      const existingConvert = await db.outbox
+        .where('entityKey')
+        .equals(note.id)
+        .and(
+          (op) =>
+            op.type === 'convert_note' &&
+            op.state !== 'done' &&
+            op.state !== 'cancelled' &&
+            op.accountId === accountId,
+        )
+        .last();
+
+      if (existingConvert) {
+        // Обновляем payload существующей операции, а не добавляем новую
+        set({ conversionDialog: { noteId: null } });
+        return;
+      }
 
       const cachedLabels = await db.repositoryLabelsCache.get([
         accountId,

@@ -108,4 +108,58 @@ describe('OAuth Worker refresh lifecycle', () => {
     expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('preserves KV and returns 503 when GitHub responds with a transient 500 error', async () => {
+    const kv = new MemoryKv();
+    const sessionId = 'transient-session-123456';
+    await kv.put(
+      sessionId,
+      JSON.stringify({ refreshToken: 'ghr_valid', expiresAt: Date.now() + 60_000 }),
+    );
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: 'server_error' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const response = await worker.fetch(
+      request({ action: 'refresh', refresh_session_id: sessionId }),
+      env(kv),
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(503);
+    expect(body.error).toBe('token_refresh_unavailable');
+    expect(typeof body.retry_after).toBe('number');
+    // KV запись должна остаться нетронутой
+    expect(kv.values.has(sessionId)).toBe(true);
+  });
+
+  it('deletes KV and returns 401 when GitHub returns invalid_grant (terminal error)', async () => {
+    const kv = new MemoryKv();
+    const sessionId = 'terminal-session-123456';
+    await kv.put(
+      sessionId,
+      JSON.stringify({ refreshToken: 'ghr_expired', expiresAt: Date.now() + 60_000 }),
+    );
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: 'invalid_grant', error_description: 'Token expired' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const response = await worker.fetch(
+      request({ action: 'refresh', refresh_session_id: sessionId }),
+      env(kv),
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(401);
+    expect(body.error).toBe('invalid_grant');
+    // KV запись должна быть удалена
+    expect(kv.values.has(sessionId)).toBe(false);
+  });
 });
+

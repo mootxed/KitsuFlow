@@ -291,7 +291,7 @@ describe('IndexedDB schema v5 → v6', () => {
 
     const upgraded = new KitsuFlowDatabase(name);
     await upgraded.open();
-    expect(upgraded.verno).toBe(6);
+    expect(upgraded.verno).toBe(7);
     expect(await upgraded.githubIssuesCache.count()).toBe(0);
     expect(await upgraded.pendingIssues.get('stable-client-id')).toMatchObject({
       title: 'Legacy pending',
@@ -389,6 +389,174 @@ describe('IndexedDB schema v5 → v6', () => {
       ),
     ).toBe(true);
 
+    upgraded.close();
+    await Dexie.delete(name);
+  });
+
+  it('v6→v7: migrates pendingIssues for users who already had old v6 schema without upgrade logic', async () => {
+    const name = `kitsuflow-v6-${crypto.randomUUID()}`;
+    // Симулируем старое v6 без upgrade-логики (чистое изменение схемы)
+    const oldV6 = new Dexie(name);
+    oldV6.version(6).stores({
+      localNotes: 'id, status, repositoryFullName, updatedAt, syncState, accountId',
+      githubIssuesCache:
+        '[accountId+repositoryFullName+issueNumber], accountId, repositoryFullName, derivedStatus, updatedAt, syncState, clientLocalId',
+      pendingIssues:
+        'clientLocalId, accountId, repositoryFullName, createdAt, needsAttention, migrationGroupId',
+      repositoriesCache:
+        '[accountId+fullName], accountId, fullName, pinned, installationId, updatedAt',
+      repositoryLabelsCache:
+        '[accountId+repositoryFullName], accountId, repositoryFullName, cachedAt',
+      repositoryAssigneesCache:
+        '[accountId+repositoryFullName], accountId, repositoryFullName, cachedAt',
+      outbox:
+        'id, type, entityKey, state, repositoryFullName, accountId, createdAt, nextAttemptAt, leaseExpiresAt, ambiguityRisk, migrationGroupId',
+      tabs: 'id, accountId, active, position',
+      settings: 'key',
+      syncMetadata: 'key, accountId, updatedAt',
+    });
+    await oldV6.open();
+    const now = '2026-08-01T00:00:00Z';
+    // Добавляем временный issue в githubIssuesCache (как было до v5 миграции)
+    await oldV6.table('githubIssuesCache').put({
+      repositoryFullName: 'acme/v6test',
+      nodeId: 'temporary-v6',
+      issueNumber: -1,
+      title: 'V6 pending issue',
+      body: 'body',
+      state: 'open',
+      derivedStatus: 'todo',
+      derivedPriority: 'none',
+      labels: [],
+      assignees: [],
+      htmlUrl: '',
+      createdAt: now,
+      updatedAt: now,
+      cachedAt: now,
+      syncState: 'pending',
+      statusConflict: false,
+      priorityConflict: false,
+      accountId: '9999',
+    });
+    await oldV6.table('outbox').put({
+      id: 'v6-create-op',
+      type: 'create_issue',
+      entityKey: 'v6-client-id',
+      repositoryFullName: 'acme/v6test',
+      payload: { title: 'V6 pending issue' },
+      state: 'pending',
+      requestStarted: false,
+      attemptCount: 0,
+      createdAt: now,
+      updatedAt: now,
+      accountId: '9999',
+    });
+    oldV6.close();
+
+    // Открываем новым кодом (включая v7)
+    const upgraded = new KitsuFlowDatabase(name);
+    await upgraded.open();
+    expect(upgraded.verno).toBe(7);
+    // Временный issue должен быть перенесён в pendingIssues
+    expect(await upgraded.githubIssuesCache.count()).toBe(0);
+    const pending = await upgraded.pendingIssues.get('v6-client-id');
+    expect(pending).toMatchObject({ title: 'V6 pending issue', accountId: '9999' });
+    upgraded.close();
+    await Dexie.delete(name);
+  });
+
+  it('assigns the same migrationGroupId to multiple pending issues sharing identical candidates', async () => {
+    const name = `kitsuflow-v6-shared-group-${crypto.randomUUID()}`;
+    const old = new Dexie(name);
+    old.version(5).stores({
+      localNotes: 'id, status, repositoryFullName, updatedAt, syncState, accountId',
+      githubIssuesCache:
+        '[accountId+repositoryFullName+issueNumber], accountId, repositoryFullName, derivedStatus, updatedAt, syncState, clientLocalId',
+      pendingIssues: 'clientLocalId, accountId, repositoryFullName, createdAt',
+      repositoriesCache:
+        '[accountId+fullName], accountId, fullName, pinned, installationId, updatedAt',
+      repositoryLabelsCache:
+        '[accountId+repositoryFullName], accountId, repositoryFullName, cachedAt',
+      repositoryAssigneesCache:
+        '[accountId+repositoryFullName], accountId, repositoryFullName, cachedAt',
+      outbox:
+        'id, type, entityKey, state, repositoryFullName, accountId, createdAt, nextAttemptAt, leaseExpiresAt',
+      tabs: 'id, accountId, active, position',
+      settings: 'key',
+      syncMetadata: 'key, accountId, updatedAt',
+    });
+    await old.open();
+    const now = '2026-08-01T00:00:00Z';
+    // Два pending issue с одинаковым заголовком (будут совпадать с одним набором кандидатов)
+    await old.table('githubIssuesCache').bulkPut([
+      {
+        repositoryFullName: 'acme/shared',
+        nodeId: 'tmp-1',
+        issueNumber: -1,
+        title: 'Shared title',
+        body: '',
+        state: 'open',
+        derivedStatus: 'todo',
+        derivedPriority: 'none',
+        labels: [],
+        assignees: [],
+        htmlUrl: '',
+        createdAt: now,
+        updatedAt: now,
+        cachedAt: now,
+        syncState: 'pending',
+        statusConflict: false,
+        priorityConflict: false,
+        accountId: '1001',
+      },
+      {
+        repositoryFullName: 'acme/shared',
+        nodeId: 'tmp-2',
+        issueNumber: -2,
+        title: 'Shared title',
+        body: '',
+        state: 'open',
+        derivedStatus: 'todo',
+        derivedPriority: 'none',
+        labels: [],
+        assignees: [],
+        htmlUrl: '',
+        createdAt: now,
+        updatedAt: now,
+        cachedAt: now,
+        syncState: 'pending',
+        statusConflict: false,
+        priorityConflict: false,
+        accountId: '1001',
+      },
+    ]);
+    // Два outbox-кандидата с одинаковым заголовком
+    await old.table('outbox').bulkPut(
+      ['shared-cand-a', 'shared-cand-b'].map((id) => ({
+        id,
+        type: 'create_issue',
+        entityKey: id,
+        repositoryFullName: 'acme/shared',
+        payload: { title: 'Shared title' },
+        state: 'pending',
+        requestStarted: false,
+        attemptCount: 0,
+        createdAt: now,
+        updatedAt: now,
+        accountId: '1001',
+      })),
+    );
+    old.close();
+
+    const upgraded = new KitsuFlowDatabase(name);
+    await upgraded.open();
+    const pendingAll = await upgraded.pendingIssues.toArray();
+    // Оба pending должны быть ambiguous
+    expect(pendingAll.every((p) => p.needsAttention === true)).toBe(true);
+    // Оба pending должны иметь одинаковый migrationGroupId
+    const groupIds = new Set(pendingAll.map((p) => p.migrationGroupId));
+    expect(groupIds.size).toBe(1);
+    expect([...groupIds][0]).toBeTruthy();
     upgraded.close();
     await Dexie.delete(name);
   });

@@ -332,4 +332,107 @@ describe('pending actions and note conversion lifecycle', () => {
       issueNumber: 77,
     });
   });
+
+  it('double confirmConversion creates only one convert_note outbox entry', async () => {
+    const note = createLocalNote({ title: 'Convert me', description: '', status: 'question', repositoryFullName: 'acme/repo', localTags: [], checklist: [] });
+    note.id = 'note-double-convert';
+    note.accountId = '1001';
+    await db.localNotes.put(note);
+    useAppStore.setState({
+      user: { id: 1001, login: 'fox', name: 'Fox', avatarUrl: '' },
+      api: {} as never,
+      notes: [note],
+      repositories: [
+        {
+          id: 1, installationId: 7, fullName: 'acme/repo', owner: 'acme', name: 'repo',
+          private: false, permissions: { pull: true, push: true }, pinned: true,
+          updatedAt: now, accountId: '1001',
+        },
+      ],
+      conversionDialog: { noteId: note.id },
+    });
+
+    const draft = { repositoryFullName: 'acme/repo', status: 'todo' as const, priority: 'none' as const, labels: [], assignees: [] };
+    // Первый вызов
+    await useAppStore.getState().confirmConversion(draft);
+    // Сбрасываем диалог и вызываем снова
+    useAppStore.setState({ conversionDialog: { noteId: note.id } });
+    await useAppStore.getState().confirmConversion(draft);
+
+    const ops = await db.outbox.where('entityKey').equals(note.id).toArray();
+    const activeOps = ops.filter((op) => op.type === 'convert_note' && op.state !== 'done' && op.state !== 'cancelled');
+    expect(activeOps).toHaveLength(1);
+  });
+
+  it('deleteNote cancels the associated pending convert_note operation', async () => {
+    const note = createLocalNote({ title: 'Will be deleted', description: '', status: 'question', repositoryFullName: 'acme/repo', localTags: [], checklist: [] });
+    note.id = 'note-to-delete';
+    note.accountId = '1001';
+    note.syncState = 'pending';
+    await db.localNotes.put(note);
+    const convertOp: OutboxOperation = {
+      id: 'convert-op-to-cancel',
+      type: 'convert_note',
+      entityKey: note.id,
+      sourceNoteId: note.id,
+      repositoryFullName: 'acme/repo',
+      payload: { title: note.title, body: '', labels: [], assignees: [], state: 'open' },
+      state: 'pending',
+      requestStarted: false,
+      attemptCount: 0,
+      createdAt: now,
+      updatedAt: now,
+      accountId: '1001',
+    };
+    await db.outbox.put(convertOp);
+    useAppStore.setState({
+      user: { id: 1001, login: 'fox', name: 'Fox', avatarUrl: '' },
+      api: {} as never,
+      notes: [note],
+      outbox: [convertOp],
+      repositories: [],
+    });
+
+    await useAppStore.getState().deleteNote(note.id);
+
+    expect(await db.localNotes.get(note.id)).toBeUndefined();
+    const cancelledOp = await db.outbox.get('convert-op-to-cancel');
+    expect(cancelledOp?.state).toBe('cancelled');
+  });
+
+  it('updateNote syncs title/body into the pending convert_note payload', async () => {
+    const note = createLocalNote({ title: 'Original title', description: 'Original body', status: 'question', repositoryFullName: 'acme/repo', localTags: [], checklist: [] });
+    note.id = 'note-to-update';
+    note.accountId = '1001';
+    note.syncState = 'pending';
+    await db.localNotes.put(note);
+    const convertOp: OutboxOperation = {
+      id: 'convert-op-to-update',
+      type: 'convert_note',
+      entityKey: note.id,
+      sourceNoteId: note.id,
+      repositoryFullName: 'acme/repo',
+      payload: { title: 'Original title', body: 'Original body', labels: [], assignees: [], state: 'open' },
+      state: 'pending',
+      requestStarted: false,
+      attemptCount: 0,
+      createdAt: now,
+      updatedAt: now,
+      accountId: '1001',
+    };
+    await db.outbox.put(convertOp);
+    useAppStore.setState({
+      user: { id: 1001, login: 'fox', name: 'Fox', avatarUrl: '' },
+      api: {} as never,
+      notes: [note],
+      outbox: [convertOp],
+      repositories: [],
+    });
+
+    await useAppStore.getState().updateNote(note.id, { title: 'Updated title' });
+
+    const updatedOp = await db.outbox.get('convert-op-to-update');
+    expect(updatedOp?.payload.title).toBe('Updated title');
+  });
 });
+

@@ -1,4 +1,5 @@
 const TOKEN_KEY = 'kitsuflow.github.access-token';
+const ACCOUNT_CACHE_KEY = 'kitsuflow.account.cache';
 
 export interface GitHubAuthSession {
   accessToken: string;
@@ -7,6 +8,14 @@ export interface GitHubAuthSession {
   /** Непрозрачный идентификатор серверной refresh-сессии, не GitHub refresh token. */
   refreshSessionId?: string | undefined;
   refreshSessionExpiresAt?: number | undefined;
+}
+
+/** Несекретный кеш аккаунта для офлайн-режима. Хранится в localStorage и переживает перезагрузку. */
+export interface AccountCacheEntry {
+  accountId: string;
+  login: string;
+  avatarUrl: string;
+  name?: string | null | undefined;
 }
 
 const read = (): GitHubAuthSession | null => {
@@ -50,5 +59,24 @@ export const session = {
     const current = read();
     sessionStorage.removeItem(TOKEN_KEY);
     return current;
+  },
+};
+
+/** Несекретный кеш данных аккаунта (переживает офлайн-перезагрузку). */
+export const accountCache = {
+  get(): AccountCacheEntry | null {
+    const stored = localStorage.getItem(ACCOUNT_CACHE_KEY);
+    if (!stored) return null;
+    try {
+      return JSON.parse(stored) as AccountCacheEntry;
+    } catch {
+      return null;
+    }
+  },
+  set(entry: AccountCacheEntry): void {
+    localStorage.setItem(ACCOUNT_CACHE_KEY, JSON.stringify(entry));
+  },
+  clear(): void {
+    localStorage.removeItem(ACCOUNT_CACHE_KEY);
   },
 };
