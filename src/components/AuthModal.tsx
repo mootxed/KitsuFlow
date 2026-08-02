@@ -4,7 +4,10 @@ import { useAppStore } from '../state/app-store';
 export function AuthModal() {
   const auth = useAppStore((state) => state.auth);
   const login = useAppStore((state) => state.login);
+  const loginWithPkce = useAppStore((state) => state.loginWithPkce);
   const logout = useAppStore((state) => state.logout);
+  const hasPkceProxy = Boolean(import.meta.env.VITE_OAUTH_PROXY_URL);
+
   if (auth.phase === 'idle') return null;
   return (
     <div className="modal-backdrop">
@@ -19,6 +22,19 @@ export function AuthModal() {
           <div className="auth-state">
             <LoaderCircle className="spin" />
             <h3>Получаем одноразовый код…</h3>
+          </div>
+        )}
+        {auth.phase === 'redirecting' && (
+          <div className="auth-state">
+            <LoaderCircle className="spin" />
+            <h3>Перенаправление на GitHub…</h3>
+            <p>Сейчас откроется страница авторизации GitHub.</p>
+          </div>
+        )}
+        {auth.phase === 'callback' && (
+          <div className="auth-state">
+            <LoaderCircle className="spin" />
+            <h3>Получаем токен доступа…</h3>
           </div>
         )}
         {auth.phase === 'waiting' && (
@@ -36,7 +52,7 @@ export function AuthModal() {
             <a
               className="button primary"
               target="_blank"
-              rel="noreferrer"
+              rel="noreferrer noopener"
               href={auth.verificationUri}
             >
               Открыть GitHub <ExternalLink size={14} />
@@ -55,15 +71,28 @@ export function AuthModal() {
           <div className="auth-state error">
             <h3>{auth.phase === 'expired' ? 'Код истёк' : 'Не удалось войти'}</h3>
             <p>{auth.message}</p>
-            <button
-              className="primary"
-              onClick={() => {
-                logout();
-                void login();
-              }}
-            >
-              Попробовать снова
-            </button>
+            {/* Показываем кнопки повтора в зависимости от доступного метода */}
+            {hasPkceProxy ? (
+              <button
+                className="primary"
+                onClick={() => {
+                  logout();
+                  void loginWithPkce();
+                }}
+              >
+                Попробовать снова
+              </button>
+            ) : (
+              <button
+                className="primary"
+                onClick={() => {
+                  logout();
+                  void login();
+                }}
+              >
+                Попробовать снова
+              </button>
+            )}
           </div>
         )}
       </section>

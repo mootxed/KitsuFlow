@@ -14,14 +14,24 @@ import type {
   GitHubUser,
   IssuePriority,
   LocalNote,
+  OAuthFlowPhase,
   OutboxOperation,
+  PendingIssue,
   Repository,
   TabEntity,
   TaskStatus,
   WorkspaceTab,
 } from '../domain/types';
 import { GitHubApi } from '../github/api';
-import { DeviceFlowController, type DeviceFlowState } from '../github/device-flow';
+import { DeviceFlowController } from '../github/device-flow';
+import {
+  buildAuthUrl,
+  consumePkceState,
+  exchangeCode,
+  generatePkce,
+  parseCallback,
+  savePkceState,
+} from '../github/oauth-pkce';
 import { session } from '../github/session';
 import { OutboxProcessor, type SyncEvent } from '../sync/outbox';
 
@@ -56,15 +66,22 @@ export interface ConversionDialogState {
   priority?: IssuePriority | undefined;
 }
 
+/** Флаг legacy-unassigned данных для диалога присвоения аккаунту. */
+export interface LegacyClaimState {
+  hasLegacyData: boolean;
+  counts: { repositories: number; issues: number; notes: number; outbox: number; tabs: number };
+}
+
 interface AppState {
   initialized: boolean;
   loading: boolean;
   user: GitHubUser | null;
-  auth: DeviceFlowState;
+  auth: OAuthFlowPhase;
   api: GitHubApi | null;
   repositories: Repository[];
   notes: LocalNote[];
   issues: GitHubIssue[];
+  pendingIssues: PendingIssue[];
   tabs: WorkspaceTab[];
   outbox: OutboxOperation[];
   selectedTask: SelectedTask;
@@ -75,9 +92,16 @@ interface AppState {
   stale: boolean;
   error: string | null;
   rateLimitUntil: string | null;
+  /** Поколение сессии — инкрементируется при каждом login/logout для отмены stale запросов. */
+  sessionGeneration: number;
+  legacyClaim: LegacyClaimState;
 
   initialize: () => Promise<void>;
   login: () => Promise<void>;
+  /** Инициирует PKCE OAuth flow (редирект на GitHub). */
+  loginWithPkce: () => Promise<void>;
+  /** Обрабатывает OAuth callback после редиректа с GitHub. */
+  handleOAuthCallback: (url: URL) => Promise<boolean>;
   logout: () => void;
   refreshRepositories: () => Promise<void>;
   refreshIssues: (repositoryFullName?: string) => Promise<void>;
@@ -154,6 +178,10 @@ interface AppState {
     repositoryFullName: string,
   ) => Promise<Array<{ name: string; color: string }>>;
   getRepositoryAssignees: (repositoryFullName: string) => Promise<string[]>;
+  /** Привязывает legacy-unassigned данные к текущему аккаунту. */
+  claimLegacyData: () => Promise<void>;
+  /** Отклоняет привязку legacy данных (закрывает диалог). */
+  dismissLegacyClaim: () => void;
 }
 
 const PENDING_STATES = new Set(['pending', 'syncing', 'failed', 'attention', 'exhausted']);
@@ -189,6 +217,7 @@ export async function loadLocalDeviceState() {
     repositories: [],
     notes,
     issues: [],
+    pendingIssues: [],
     tabs,
     outbox: [],
   };
@@ -196,13 +225,14 @@ export async function loadLocalDeviceState() {
 
 export async function loadGitHubAccountState(accountId: string) {
   assertAccountId(accountId);
-  const [repositories, notes, issues, tabs, outbox] = await Promise.all([
+  const [repositories, notes, issues, pendingIssues, tabs, outbox] = await Promise.all([
     db.repositoriesCache.where('accountId').equals(accountId).toArray(),
     db.localNotes
       .filter((note) => note.accountId === null || note.accountId === accountId)
       .sortBy('updatedAt')
       .then((res) => res.reverse()),
     db.githubIssuesCache.where('accountId').equals(accountId).toArray(),
+    db.pendingIssues.where('accountId').equals(accountId).toArray(),
     db.tabs.where('accountId').equals(accountId).sortBy('position'),
     db.outbox.where('accountId').equals(accountId).sortBy('createdAt'),
   ]);
@@ -211,6 +241,7 @@ export async function loadGitHubAccountState(accountId: string) {
     repositories,
     notes,
     issues,
+    pendingIssues,
     tabs,
     outbox,
   };
@@ -228,6 +259,19 @@ async function persistTabs(tabs: WorkspaceTab[], accountId?: string | null): Pro
     }
     await db.tabs.bulkPut(tabsWithAccount);
   });
+}
+
+/** Проверяет наличие данных с accountId === 'legacy-unassigned'. */
+async function checkLegacyData(): Promise<LegacyClaimState> {
+  const [repositories, issues, notes, outbox, tabs] = await Promise.all([
+    db.repositoriesCache.where('accountId').equals('legacy-unassigned').count(),
+    db.githubIssuesCache.where('accountId').equals('legacy-unassigned').count(),
+    db.localNotes.filter((n) => n.accountId === 'legacy-unassigned').count(),
+    db.outbox.where('accountId').equals('legacy-unassigned').count(),
+    db.tabs.where('accountId').equals('legacy-unassigned').count(),
+  ]);
+  const hasLegacyData = repositories + issues + notes + outbox + tabs > 0;
+  return { hasLegacyData, counts: { repositories, issues, notes, outbox, tabs } };
 }
 
 let listenersAttached = false;
@@ -257,27 +301,33 @@ function handleOffline(): void {
 
 export const useAppStore = create<AppState>((set, get) => {
   const handleIssueCreated = async (tempId: string | number, realIssue: GitHubIssue) => {
-    const { selectedTask } = get();
+    const { selectedTask, sessionGeneration } = get();
     if (selectedTask?.kind === 'pending-issue' && selectedTask.clientLocalId === String(tempId)) {
       set({ selectedTask: { kind: 'issue', key: issueKey(realIssue) } });
     }
     const currentAccountId = get().user ? String(get().user?.id) : null;
+    // Проверяем, что сессия не изменилась пока ждали
+    if (get().sessionGeneration !== sessionGeneration) return;
     const cached = currentAccountId
       ? await loadGitHubAccountState(currentAccountId)
       : await loadLocalDeviceState();
-    set({ tabs: cached.tabs, issues: cached.issues, outbox: cached.outbox });
+    if (get().sessionGeneration !== sessionGeneration) return;
+    set({ tabs: cached.tabs, issues: cached.issues, pendingIssues: cached.pendingIssues, outbox: cached.outbox });
   };
 
   const handleSyncEvent = async (event: SyncEvent) => {
+    const { sessionGeneration } = get();
     if (event.type === 'unauthorized') {
       session.clear();
       set({
         user: null,
         api: null,
         issues: [],
+        pendingIssues: [],
         repositories: [],
         outbox: [],
         selectedTask: null,
+        sessionGeneration: sessionGeneration + 1,
         error: 'Сессия GitHub истекла. Войдите снова; очередь сохранена.',
       });
       const localCached = await loadLocalDeviceState();
@@ -289,9 +339,11 @@ export const useAppStore = create<AppState>((set, get) => {
       set({ error: `Нет доступа: ${event.message}` });
     }
     const currentAccountId = get().user ? String(get().user?.id) : null;
+    if (get().sessionGeneration !== sessionGeneration) return;
     const cached = currentAccountId
       ? await loadGitHubAccountState(currentAccountId)
       : await loadLocalDeviceState();
+    if (get().sessionGeneration !== sessionGeneration) return;
     set(cached);
   };
 
@@ -314,6 +366,7 @@ export const useAppStore = create<AppState>((set, get) => {
     repositories: [],
     notes: [],
     issues: [],
+    pendingIssues: [],
     tabs: [],
     outbox: [],
     selectedTask: null,
@@ -324,9 +377,20 @@ export const useAppStore = create<AppState>((set, get) => {
     stale: !navigator.onLine,
     error: null,
     rateLimitUntil: null,
+    sessionGeneration: 0,
+    legacyClaim: { hasLegacyData: false, counts: { repositories: 0, issues: 0, notes: 0, outbox: 0, tabs: 0 } },
 
     initialize: async () => {
       attachConnectivityListeners();
+
+      // Проверяем OAuth callback в URL (после редиректа с GitHub)
+      const callbackHandled = await get().handleOAuthCallback(new URL(window.location.href));
+      if (callbackHandled) {
+        // Очищаем ?code=&state= из URL без перезагрузки
+        const base = import.meta.env.BASE_URL || '/';
+        window.history.replaceState({}, '', base);
+      }
+
       const currentUser = get().user;
       const currentAccountId = currentUser ? String(currentUser.id) : null;
       const cached = currentAccountId
@@ -352,16 +416,24 @@ export const useAppStore = create<AppState>((set, get) => {
       const token = session.getToken();
       if (token) {
         const api = new GitHubApi(token);
+        const gen = get().sessionGeneration;
         try {
           const user = await api.getCurrentUser();
+          if (get().sessionGeneration !== gen) return;
           const accountId = String(user.id);
           const userCached = await loadGitHubAccountState(accountId);
+          if (get().sessionGeneration !== gen) return;
           set({ api, user, error: null, ...userCached });
+
+          // Проверяем legacy-unassigned данные
+          const legacyClaim = await checkLegacyData();
+          set({ legacyClaim });
 
           await get().refreshRepositories();
           await outboxProcessor.process();
           await get().refreshIssues();
         } catch {
+          if (get().sessionGeneration !== gen) return;
           session.clear();
           const localCached = await loadLocalDeviceState();
           set({
@@ -380,17 +452,27 @@ export const useAppStore = create<AppState>((set, get) => {
       const token = await deviceFlow.start((auth) => set({ auth }));
       if (!token) return;
       const api = new GitHubApi(token);
+      const gen = get().sessionGeneration + 1;
+      set({ sessionGeneration: gen });
       try {
         const user = await api.getCurrentUser();
+        if (get().sessionGeneration !== gen) return;
         session.setToken(token);
         const accountId = String(user.id);
         const userCached = await loadGitHubAccountState(accountId);
+        if (get().sessionGeneration !== gen) return;
 
         set({ api, user, auth: { phase: 'idle' }, error: null, ...userCached });
+
+        // Проверяем legacy-unassigned данные
+        const legacyClaim = await checkLegacyData();
+        set({ legacyClaim });
+
         await get().refreshRepositories();
         await outboxProcessor.process();
         await get().refreshIssues();
       } catch {
+        if (get().sessionGeneration !== gen) return;
         session.clear();
         const localCached = await loadLocalDeviceState();
         set({
@@ -402,10 +484,91 @@ export const useAppStore = create<AppState>((set, get) => {
       }
     },
 
+    loginWithPkce: async () => {
+      const clientId = import.meta.env.VITE_GITHUB_CLIENT_ID;
+      if (!clientId) {
+        set({ auth: { phase: 'error', message: 'Не задан VITE_GITHUB_CLIENT_ID' } });
+        return;
+      }
+      set({ auth: { phase: 'requesting' }, error: null });
+      try {
+        const pkce = await generatePkce();
+        savePkceState(pkce);
+        const url = await buildAuthUrl(clientId, pkce);
+        set({ auth: { phase: 'redirecting' } });
+        window.location.href = url;
+      } catch (error) {
+        set({
+          auth: {
+            phase: 'error',
+            message: error instanceof Error ? error.message : 'Ошибка инициализации OAuth',
+          },
+        });
+      }
+    },
+
+    handleOAuthCallback: async (url: URL): Promise<boolean> => {
+      const params = parseCallback(url);
+      if (!params) return false;
+
+      const pkce = consumePkceState();
+      if (!pkce) {
+        set({ auth: { phase: 'error', message: 'OAuth state не найден в сессии. Попробуйте снова.' } });
+        return true;
+      }
+
+      if (params.state !== pkce.oauthState) {
+        set({ auth: { phase: 'error', message: 'OAuth state не совпадает. Возможна CSRF-атака.' } });
+        return true;
+      }
+
+      set({ auth: { phase: 'callback', code: params.code } });
+      const gen = get().sessionGeneration + 1;
+      set({ sessionGeneration: gen });
+
+      try {
+        const token = await exchangeCode(params.code, pkce.codeVerifier);
+        if (get().sessionGeneration !== gen) return true;
+        const api = new GitHubApi(token);
+        const user = await api.getCurrentUser();
+        if (get().sessionGeneration !== gen) return true;
+        session.setToken(token);
+        const accountId = String(user.id);
+        const userCached = await loadGitHubAccountState(accountId);
+        if (get().sessionGeneration !== gen) return true;
+
+        set({ api, user, auth: { phase: 'success' }, error: null, ...userCached });
+        setTimeout(() => set({ auth: { phase: 'idle' } }), 1500);
+
+        const legacyClaim = await checkLegacyData();
+        set({ legacyClaim });
+
+        await get().refreshRepositories();
+        await outboxProcessor.process();
+        await get().refreshIssues();
+      } catch (error) {
+        if (get().sessionGeneration !== gen) return true;
+        session.clear();
+        const localCached = await loadLocalDeviceState();
+        set({
+          api: null,
+          user: null,
+          auth: {
+            phase: 'error',
+            message: error instanceof Error ? error.message : 'Ошибка OAuth авторизации',
+          },
+          ...localCached,
+        });
+      }
+
+      return true;
+    },
+
     logout: () => {
       deviceFlow.cancel();
       session.clear();
       outboxProcessor.destroy();
+      const gen = get().sessionGeneration + 1;
       const defaultTab: WorkspaceTab = {
         id: crypto.randomUUID(),
         entity: { kind: 'all' },
@@ -420,10 +583,13 @@ export const useAppStore = create<AppState>((set, get) => {
         auth: { phase: 'idle' },
         selectedTask: null,
         issues: [],
+        pendingIssues: [],
         repositories: [],
         notes: get().notes.filter((n) => n.accountId === null),
         tabs: [defaultTab],
         outbox: [],
+        sessionGeneration: gen,
+        legacyClaim: { hasLegacyData: false, counts: { repositories: 0, issues: 0, notes: 0, outbox: 0, tabs: 0 } },
       });
     },
 
@@ -432,6 +598,7 @@ export const useAppStore = create<AppState>((set, get) => {
       const user = get().user;
       if (!api || !user || !navigator.onLine) return;
       const accountId = assertAccountId(String(user.id));
+      const gen = get().sessionGeneration;
       try {
         const currentMap = new Map(get().repositories.map((repo) => [repo.fullName, repo]));
         const repositories: Repository[] = (await api.getRepositories()).map((repo) => ({
@@ -439,10 +606,16 @@ export const useAppStore = create<AppState>((set, get) => {
           pinned: currentMap.get(repo.fullName)?.pinned || false,
           accountId,
         }));
+        if (get().sessionGeneration !== gen) return;
         await db.repositoriesCache.bulkPut(repositories);
         set({ repositories, error: null });
-      } catch (error: any) {
-        const status = error?.status;
+      } catch (error: unknown) {
+        if (get().sessionGeneration !== gen) return;
+        const status = (error as { status?: number }).status;
+        if (status === 401) {
+          get().logout();
+          return;
+        }
         set({
           error:
             status === 403
@@ -457,17 +630,26 @@ export const useAppStore = create<AppState>((set, get) => {
       const user = get().user;
       if (!api || !user || !navigator.onLine) return;
       const accountId = assertAccountId(String(user.id));
+      const gen = get().sessionGeneration;
 
       const repositories = repositoryFullName
         ? get().repositories.filter((repo) => repo.fullName === repositoryFullName)
         : get().repositories.filter((repo) => repo.pinned);
 
-      try {
-        for (const repository of repositories) {
+      /** Ошибки по отдельным репозиториям. */
+      const repoErrors: string[] = [];
+
+      for (const repository of repositories) {
+        // Проверяем сессию перед каждым репозиторием
+        if (get().sessionGeneration !== gen) return;
+
+        try {
           const [networkIssues, labels] = await Promise.all([
             api.getIssues(repository.fullName),
             api.getLabels(repository.fullName),
           ]);
+
+          if (get().sessionGeneration !== gen) return;
 
           const networkIssuesWithAccount = networkIssues.map((i) => ({ ...i, accountId }));
 
@@ -499,7 +681,7 @@ export const useAppStore = create<AppState>((set, get) => {
               );
               const localIssueMap = new Map(localIssuesInRepo.map((i) => [issueKey(i), i]));
 
-              // Удалить только не-pending записи для этого accountId и репозитория
+              // Удалить только не-pending записи
               for (const item of localIssuesInRepo) {
                 if (!PENDING_STATES.has(item.syncState)) {
                   await db.githubIssuesCache.delete([
@@ -538,15 +720,14 @@ export const useAppStore = create<AppState>((set, get) => {
                 }
               }
 
-              // Восстановить pending и временные карточки
+              // Восстановить pending записи с outbox
               for (const localIssue of localPendingIssues) {
                 const key = issueKey(localIssue);
-                const isTemporary = localIssue.issueNumber < 0;
                 const hasOutboxEntry = localIssue.clientLocalId
                   ? pendingOutboxKeys.has(localIssue.clientLocalId)
                   : pendingOutboxKeys.has(key);
 
-                if (isTemporary || hasOutboxEntry) {
+                if (hasOutboxEntry) {
                   await db.githubIssuesCache.put({ ...localIssue, accountId });
                 }
               }
@@ -559,39 +740,41 @@ export const useAppStore = create<AppState>((set, get) => {
               });
             },
           );
-        }
+        } catch (error: unknown) {
+          if (get().sessionGeneration !== gen) return;
+          const status = (error as { status?: number }).status;
 
-        const cached = await loadGitHubAccountState(accountId);
-        set({ issues: cached.issues, stale: false, error: null });
-      } catch (error: any) {
-        const status = error?.status;
-        if (status === 401) {
-          session.clear();
-          set({
-            api: null,
-            user: null,
-            issues: [],
-            repositories: [],
-            outbox: [],
-            error: 'Сессия GitHub истекла. Войдите снова.',
-          });
-        } else if (status === 403 || status === 429) {
-          const headers = error?.response?.headers || {};
-          const isRate = status === 429 || headers['x-ratelimit-remaining'] === '0';
-          if (isRate) {
-            set({ stale: true, error: 'GitHub API временно ограничил запросы. Показан кеш.' });
-          } else {
-            set({
-              stale: true,
-              error: 'Отказано в доступе. Убедитесь, что GitHub App имеет нужные разрешения.',
-            });
+
+          // 401 — глобальная ошибка: немедленно выходим
+          if (status === 401) {
+            get().logout();
+            set({ error: 'Сессия GitHub истекла. Войдите снова; данные сохранены.' });
+            return;
           }
-        } else if (status === 404) {
-          set({ stale: true, error: 'Репозиторий не найден (404). Показан кеш.' });
-        } else {
-          set({ stale: true, error: 'Не удалось обновить Issues. Показан кеш.' });
+
+          // Локальная ошибка репозитория: логируем и продолжаем
+          const msg =
+            status === 403
+              ? `${repository.fullName}: нет доступа (403)`
+              : status === 404
+                ? `${repository.fullName}: репозиторий не найден (404)`
+                : status === 429
+                  ? `${repository.fullName}: превышен лимит API (429)`
+                  : `${repository.fullName}: ошибка обновления`;
+          repoErrors.push(msg);
         }
       }
+
+      if (get().sessionGeneration !== gen) return;
+      const cached = await loadGitHubAccountState(accountId);
+      if (get().sessionGeneration !== gen) return;
+
+      const errorMsg =
+        repoErrors.length > 0
+          ? `Ошибки при обновлении: ${repoErrors.join('; ')}`
+          : null;
+
+      set({ issues: cached.issues, pendingIssues: cached.pendingIssues, stale: repoErrors.length > 0, error: errorMsg });
     },
 
     toggleRepository: async (fullName) => {
@@ -636,11 +819,11 @@ export const useAppStore = create<AppState>((set, get) => {
       );
       const now = new Date().toISOString();
 
-      const pending: GitHubIssue = {
-        repositoryFullName,
-        nodeId: `local:${clientLocalId}`,
-        issueNumber: -1,
+      // Временная карточка теперь в pendingIssues — не в githubIssuesCache
+      const pending: PendingIssue = {
         clientLocalId,
+        repositoryFullName,
+        accountId: activeAccountId,
         title: input.title,
         body: [
           input.description,
@@ -653,14 +836,8 @@ export const useAppStore = create<AppState>((set, get) => {
         derivedPriority: input.priority,
         labels: labels.map((name) => ({ name, color: '8c959f' })),
         assignees: input.assignees,
-        htmlUrl: '',
         createdAt: now,
         updatedAt: now,
-        cachedAt: now,
-        syncState: 'pending',
-        statusConflict: false,
-        priorityConflict: false,
-        accountId: activeAccountId,
       };
 
       const outboxOp: OutboxOperation = {
@@ -685,8 +862,8 @@ export const useAppStore = create<AppState>((set, get) => {
         accountId: activeAccountId,
       };
 
-      await db.transaction('rw', db.githubIssuesCache, db.outbox, async () => {
-        await db.githubIssuesCache.put(pending);
+      await db.transaction('rw', db.pendingIssues, db.outbox, async () => {
+        await db.pendingIssues.put(pending);
         await db.outbox.add(outboxOp);
       });
 
@@ -1117,6 +1294,86 @@ export const useAppStore = create<AppState>((set, get) => {
         if (cached) return cached.assignees;
       }
       return [];
+    },
+
+    claimLegacyData: async () => {
+      const user = get().user;
+      if (!user) return;
+      const accountId = assertAccountId(String(user.id));
+
+      await db.transaction(
+        'rw',
+        [
+          db.repositoriesCache,
+          db.githubIssuesCache,
+          db.repositoryLabelsCache,
+          db.repositoryAssigneesCache,
+          db.outbox,
+          db.tabs,
+          db.localNotes,
+        ],
+        async () => {
+          // Репозитории: старый ключ [legacy-unassigned+fullName] → [accountId+fullName]
+          const legacyRepos = await db.repositoriesCache
+            .where('accountId').equals('legacy-unassigned').toArray();
+          for (const repo of legacyRepos) {
+            await db.repositoriesCache.delete(['legacy-unassigned', repo.fullName]);
+            await db.repositoriesCache.put({ ...repo, accountId });
+          }
+
+          // Issues
+          const legacyIssues = await db.githubIssuesCache
+            .where('accountId').equals('legacy-unassigned').toArray();
+          for (const issue of legacyIssues) {
+            await db.githubIssuesCache.delete(['legacy-unassigned', issue.repositoryFullName, issue.issueNumber]);
+            await db.githubIssuesCache.put({ ...issue, accountId });
+          }
+
+          // Labels cache
+          const legacyLabels = await db.repositoryLabelsCache
+            .where('accountId').equals('legacy-unassigned').toArray();
+          for (const label of legacyLabels) {
+            await db.repositoryLabelsCache.delete(['legacy-unassigned', label.repositoryFullName]);
+            await db.repositoryLabelsCache.put({ ...label, accountId });
+          }
+
+          // Assignees cache
+          const legacyAssignees = await db.repositoryAssigneesCache
+            .where('accountId').equals('legacy-unassigned').toArray();
+          for (const entry of legacyAssignees) {
+            await db.repositoryAssigneesCache.delete(['legacy-unassigned', entry.repositoryFullName]);
+            await db.repositoryAssigneesCache.put({ ...entry, accountId });
+          }
+
+          // Outbox
+          await db.outbox
+            .where('accountId').equals('legacy-unassigned')
+            .modify({ accountId });
+
+          // Tabs
+          await db.tabs
+            .where('accountId').equals('legacy-unassigned')
+            .modify({ accountId });
+
+          // Notes
+          await db.localNotes
+            .filter((n) => n.accountId === 'legacy-unassigned')
+            .modify({ accountId });
+        },
+      );
+
+      // Перезагружаем состояние
+      const userCached = await loadGitHubAccountState(accountId);
+      set({
+        ...userCached,
+        legacyClaim: { hasLegacyData: false, counts: { repositories: 0, issues: 0, notes: 0, outbox: 0, tabs: 0 } },
+      });
+    },
+
+    dismissLegacyClaim: () => {
+      set({
+        legacyClaim: { hasLegacyData: false, counts: { repositories: 0, issues: 0, notes: 0, outbox: 0, tabs: 0 } },
+      });
     },
   };
 });

@@ -1,0 +1,160 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import { db } from '../../src/data/db';
+import { useAppStore } from '../../src/state/app-store';
+import { normalizeIssue } from '../../src/domain/github-mapping';
+import { apiIssue } from '../fixtures';
+
+describe('Extended Account Isolation & Session Generation Safety', () => {
+  afterEach(async () => {
+    await Promise.all(db.tables.map((table) => table.clear()));
+    useAppStore.setState({
+      user: null,
+      api: null,
+      issues: [],
+      notes: [],
+      pendingIssues: [],
+      repositories: [],
+      tabs: [],
+      outbox: [],
+      sessionGeneration: 0,
+    });
+  });
+
+  it('clears state on 401 unauthorized response during refreshIssues', async () => {
+    const user = { id: 1001, login: 'alice', name: 'Alice', avatarUrl: '' };
+    const mockApi = {
+      getIssues: async () => {
+        const error = new Error('Unauthorized');
+        (error as any).status = 401;
+        throw error;
+      },
+      getLabels: async () => [],
+    };
+
+
+    useAppStore.setState({
+      user,
+      api: mockApi as any,
+      repositories: [
+        {
+          id: 1,
+          installationId: 1,
+          fullName: 'org/repo',
+          owner: 'org',
+          name: 'repo',
+          private: false,
+          permissions: { pull: true, push: true },
+          pinned: true,
+          updatedAt: new Date().toISOString(),
+          accountId: '1001',
+        },
+      ],
+    });
+
+    await useAppStore.getState().refreshIssues('org/repo');
+
+    const state = useAppStore.getState();
+    expect(state.user).toBeNull();
+    expect(state.api).toBeNull();
+    expect(state.issues).toHaveLength(0);
+    expect(state.error).toContain('Сессия GitHub истекла');
+  });
+
+  it('cancels stale async updates if logout occurs while request is in-flight', async () => {
+    let resolveGetIssues!: (val: any) => void;
+    const getIssuesPromise = new Promise((resolve) => {
+      resolveGetIssues = resolve;
+    });
+
+    const mockApi = {
+      getIssues: async () => {
+        await getIssuesPromise;
+        return [normalizeIssue('org/repo', apiIssue({ number: 99, title: 'Stale Issue' }), '1001')];
+      },
+    };
+
+    const user = { id: 1001, login: 'alice', name: 'Alice', avatarUrl: '' };
+    useAppStore.setState({
+      user,
+      api: mockApi as any,
+      repositories: [
+        {
+          id: 1,
+          installationId: 1,
+          fullName: 'org/repo',
+          owner: 'org',
+          name: 'repo',
+          private: false,
+          permissions: { pull: true, push: true },
+          pinned: true,
+          updatedAt: new Date().toISOString(),
+          accountId: '1001',
+        },
+      ],
+    });
+
+    const store = useAppStore.getState();
+
+    // Start refresh in background (will pause at getIssuesPromise)
+    const refreshPromise = store.refreshIssues('org/repo');
+
+    // Logout immediately — increments sessionGeneration
+    store.logout();
+    expect(useAppStore.getState().user).toBeNull();
+
+    // Now complete the stale request
+    resolveGetIssues(true);
+    await refreshPromise;
+
+    // State MUST NOT be contaminated with Alice's stale issue
+    const finalState = useAppStore.getState();
+    expect(finalState.user).toBeNull();
+    expect(finalState.issues).toHaveLength(0);
+  });
+
+  it('claimLegacyData transfers legacy-unassigned records to active user account', async () => {
+    const user = { id: 1001, login: 'alice', name: 'Alice', avatarUrl: '' };
+    useAppStore.setState({ user });
+
+    // Seed DB with legacy-unassigned data
+    await db.localNotes.add({
+      id: 'legacy-note-1',
+      title: 'Legacy Note',
+      description: '',
+      status: 'question',
+      repositoryFullName: 'org/repo',
+      localTags: [],
+      checklist: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      syncState: 'local',
+      accountId: 'legacy-unassigned',
+    });
+
+    await db.outbox.add({
+      id: 'legacy-op-1',
+      type: 'create_issue',
+      entityKey: 'legacy-key',
+      repositoryFullName: 'org/repo',
+      payload: { title: 'Legacy Op' },
+      state: 'pending',
+      requestStarted: false,
+      attemptCount: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      accountId: 'legacy-unassigned',
+    });
+
+    const store = useAppStore.getState();
+    await store.claimLegacyData();
+
+    // Verify notes and outbox are now assigned to 1001
+    const note = await db.localNotes.get('legacy-note-1');
+    expect(note?.accountId).toBe('1001');
+
+    const op = await db.outbox.get('legacy-op-1');
+    expect(op?.accountId).toBe('1001');
+
+    expect(useAppStore.getState().legacyClaim.hasLegacyData).toBe(false);
+  });
+});

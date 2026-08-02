@@ -19,6 +19,7 @@ describe('Outbox and Refresh Issues Controlled Race Barriers', () => {
     useAppStore.setState({
       issues: [],
       notes: [],
+      pendingIssues: [],
       repositories: [],
       api: null,
       tabs: [],
@@ -26,19 +27,33 @@ describe('Outbox and Refresh Issues Controlled Race Barriers', () => {
     });
   });
 
-  it('controlled barrier race: pending create card is preserved while refresh runs concurrently', async () => {
+  it('controlled barrier race: pending create card is stored in pendingIssues (not issues) while API is in-flight', async () => {
     const barrier = createBarrier();
     let createCalled = false;
 
+    const repo = {
+      id: 1,
+      installationId: 1,
+      fullName: 'acme/repo',
+      owner: 'acme',
+      name: 'repo',
+      private: false,
+      permissions: { pull: true, push: true },
+      pinned: true,
+      updatedAt: new Date().toISOString(),
+      accountId: '1001',
+    };
+    await db.repositoriesCache.put(repo);
+
     const mockApi = {
       getIssues: async () => [
-        normalizeIssue('acme/repo', apiIssue({ number: 1, title: 'Server Issue 1' })),
+        normalizeIssue('acme/repo', apiIssue({ number: 1, title: 'Server Issue 1' }), '1001'),
       ],
       getLabels: async () => [],
       createIssue: async () => {
         createCalled = true;
         await barrier.promise;
-        return normalizeIssue('acme/repo', apiIssue({ number: 2, title: 'New Created Issue' }));
+        return normalizeIssue('acme/repo', apiIssue({ number: 2, title: 'New Created Issue' }), '1001');
       },
     };
 
@@ -46,25 +61,12 @@ describe('Outbox and Refresh Issues Controlled Race Barriers', () => {
     useAppStore.setState({
       user,
       api: mockApi as any,
-      repositories: [
-        {
-          id: 1,
-          installationId: 1,
-          fullName: 'acme/repo',
-          owner: 'acme',
-          name: 'repo',
-          private: false,
-          permissions: { pull: true, push: true },
-          pinned: true,
-          updatedAt: new Date().toISOString(),
-          accountId: '1001',
-        },
-      ],
+      repositories: [repo],
     });
 
     const store = useAppStore.getState();
 
-    // 1. Start createTask (enqueues outbox and triggers outboxProcessor.process())
+    // 1. createTask enqueues outbox + puts in pendingIssues, then triggers outboxProcessor
     const createPromise = store.createTask({
       title: 'New Created Issue',
       description: 'Test body',
@@ -76,7 +78,7 @@ describe('Outbox and Refresh Issues Controlled Race Barriers', () => {
       assignees: [],
     });
 
-    // Wait until createIssue API is reached and waiting on barrier
+    // Wait until createIssue API is reached and paused at barrier
     while (!createCalled) {
       await new Promise((r) => setTimeout(r, 10));
     }
@@ -85,21 +87,45 @@ describe('Outbox and Refresh Issues Controlled Race Barriers', () => {
     const refreshPromise = store.refreshIssues('acme/repo');
     await refreshPromise;
 
-    // Check intermediate state in store: temporary card MUST NOT be wiped by refresh!
-    const intermediateIssues = useAppStore.getState().issues;
-    expect(intermediateIssues.some((i) => i.title === 'New Created Issue')).toBe(true);
+    // Check intermediate state:
+    // - Pending card is now in pendingIssues, NOT in issues
+    const intermediateState = useAppStore.getState();
+    expect(
+      intermediateState.pendingIssues.some((p) => p.title === 'New Created Issue'),
+      'pending card must be in pendingIssues while API is in-flight',
+    ).toBe(true);
+    // - The real server issue is loaded
+    expect(
+      intermediateState.issues.some((i) => i.title === 'Server Issue 1'),
+      'real server issue must be loaded by refresh',
+    ).toBe(true);
 
-    // 3. Release barrier and allow createIssue to finish
+    // 3. Release barrier
     barrier.resolve();
     await createPromise;
 
-    // 4. Final state check: no duplicates, replaced by real issue #2
-    const finalIssues = useAppStore.getState().issues;
-    expect(finalIssues.some((i) => i.issueNumber === 2)).toBe(true);
-    expect(finalIssues.filter((i) => i.title === 'New Created Issue')).toHaveLength(1);
+    // 4. Final state: pending card gone, real issue #2 visible in issues
+    const finalState = useAppStore.getState();
+    expect(finalState.issues.some((i) => i.issueNumber === 2)).toBe(true);
+    expect(finalState.pendingIssues.some((p) => p.title === 'New Created Issue')).toBe(false);
+    expect(finalState.issues.filter((i) => i.title === 'New Created Issue')).toHaveLength(1);
   });
 
   it('controlled barrier race: pending update fields are preserved during parallel refresh', async () => {
+    const repo = {
+      id: 1,
+      installationId: 1,
+      fullName: 'acme/repo',
+      owner: 'acme',
+      name: 'repo',
+      private: false,
+      permissions: { pull: true, push: true },
+      pinned: true,
+      updatedAt: new Date().toISOString(),
+      accountId: '1001',
+    };
+    await db.repositoriesCache.put(repo);
+
     const user = { id: 1001, login: 'acme', name: 'ACME', avatarUrl: '' };
     const existingIssue = {
       ...normalizeIssue('acme/repo', apiIssue({ number: 5, title: 'Original Title' }), '1001'),
@@ -126,20 +152,7 @@ describe('Outbox and Refresh Issues Controlled Race Barriers', () => {
       user,
       api: mockApi as any,
       issues: [existingIssue],
-      repositories: [
-        {
-          id: 1,
-          installationId: 1,
-          fullName: 'acme/repo',
-          owner: 'acme',
-          name: 'repo',
-          private: false,
-          permissions: { pull: true, push: true },
-          pinned: true,
-          updatedAt: new Date().toISOString(),
-          accountId: '1001',
-        },
-      ],
+      repositories: [repo],
     });
 
     const store = useAppStore.getState();
@@ -156,7 +169,7 @@ describe('Outbox and Refresh Issues Controlled Race Barriers', () => {
     // Run refresh while update is pending at barrier
     await store.refreshIssues('acme/repo');
 
-    // Optimistic local title MUST remain visible
+    // Optimistic local title MUST remain visible (pending outbox op protects it)
     expect(useAppStore.getState().issues.find((i) => i.issueNumber === 5)?.title).toBe(
       'Updated Title',
     );

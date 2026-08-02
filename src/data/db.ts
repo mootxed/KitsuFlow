@@ -3,6 +3,7 @@ import type {
   GitHubIssue,
   LocalNote,
   OutboxOperation,
+  PendingIssue,
   Repository,
   RepositoryAssigneesCache,
   RepositoryLabelsCache,
@@ -23,6 +24,7 @@ export interface SyncMetadata {
 export class KitsuFlowDatabase extends Dexie {
   localNotes!: EntityTable<LocalNote, 'id'>;
   githubIssuesCache!: Table<GitHubIssue, [string, string, number]>;
+  pendingIssues!: EntityTable<PendingIssue, 'clientLocalId'>;
   repositoriesCache!: Table<Repository, [string, string]>;
   repositoryLabelsCache!: Table<RepositoryLabelsCache, [string, string]>;
   repositoryAssigneesCache!: Table<RepositoryAssigneesCache, [string, string]>;
@@ -140,6 +142,54 @@ export class KitsuFlowDatabase extends Dexie {
             note.accountId = null;
           }
         });
+      });
+    this.version(5)
+      .stores({
+        localNotes: 'id, status, repositoryFullName, updatedAt, syncState, accountId',
+        githubIssuesCache:
+          '[accountId+repositoryFullName+issueNumber], accountId, repositoryFullName, derivedStatus, updatedAt, syncState, clientLocalId',
+        pendingIssues: 'clientLocalId, accountId, repositoryFullName, createdAt',
+        repositoriesCache:
+          '[accountId+fullName], accountId, fullName, pinned, installationId, updatedAt',
+        repositoryLabelsCache:
+          '[accountId+repositoryFullName], accountId, repositoryFullName, cachedAt',
+        repositoryAssigneesCache:
+          '[accountId+repositoryFullName], accountId, repositoryFullName, cachedAt',
+        outbox:
+          'id, type, entityKey, state, repositoryFullName, accountId, createdAt, nextAttemptAt, leaseExpiresAt',
+        tabs: 'id, accountId, active, position',
+        settings: 'key',
+        syncMetadata: 'key, accountId, updatedAt',
+      })
+      .upgrade(async (transaction) => {
+        // Переносим временные карточки (issueNumber < 0) из githubIssuesCache в pendingIssues
+        const issuesTable = transaction.table('githubIssuesCache');
+        const pendingTable = transaction.table('pendingIssues');
+        const allIssues = await issuesTable.toArray();
+        const tempIssues = allIssues.filter((i: Record<string, unknown>) => Number(i.issueNumber) < 0);
+        for (const tempIssue of tempIssues) {
+          const clientLocalId = String(tempIssue.clientLocalId || crypto.randomUUID());
+          const pending: Record<string, unknown> = {
+            clientLocalId,
+            repositoryFullName: tempIssue.repositoryFullName,
+            accountId: tempIssue.accountId,
+            title: tempIssue.title,
+            body: tempIssue.body,
+            state: tempIssue.state,
+            derivedStatus: tempIssue.derivedStatus,
+            derivedPriority: tempIssue.derivedPriority,
+            labels: tempIssue.labels,
+            assignees: tempIssue.assignees,
+            createdAt: tempIssue.createdAt,
+            updatedAt: tempIssue.updatedAt,
+          };
+          await pendingTable.put(pending);
+          // Удаляем временную запись из githubIssuesCache
+          await issuesTable
+            .where('[accountId+repositoryFullName+issueNumber]')
+            .equals([tempIssue.accountId, tempIssue.repositoryFullName, tempIssue.issueNumber])
+            .delete();
+        }
       });
   }
 }

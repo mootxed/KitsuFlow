@@ -1,6 +1,8 @@
 import { AlertCircle, CloudOff, Inbox, RefreshCw } from 'lucide-react';
 import { useAppStore } from '../state/app-store';
+import { OUTBOX_STATE_LABELS } from '../domain/types';
 import { AllTasks } from './AllTasks';
+import { PendingIssueContent } from './PendingIssueDocument';
 import { RepositoryBoard } from './RepositoryBoard';
 import { TaskDocument } from './TaskDocument';
 
@@ -10,6 +12,7 @@ export function Workspace() {
   const stale = useAppStore((state) => state.stale);
   const error = useAppStore((state) => state.error);
   const outbox = useAppStore((state) => state.outbox);
+  const pendingIssues = useAppStore((state) => state.pendingIssues);
   const refreshIssues = useAppStore((state) => state.refreshIssues);
   const retryOperation = useAppStore((state) => state.retryOperation);
   const active = tabs.find((tab) => tab.active)?.entity || { kind: 'all' as const };
@@ -20,6 +23,11 @@ export function Workspace() {
       operation.state === 'attention' ||
       operation.state === 'exhausted',
   );
+
+  const activePendingIssue =
+    active.kind === 'pending-issue'
+      ? pendingIssues.find((p) => p.clientLocalId === active.clientLocalId)
+      : undefined;
 
   return (
     <section className="workspace">
@@ -66,6 +74,7 @@ export function Workspace() {
                   {operation.attemptCount > 0 && (
                     <small> • Попыток: {operation.attemptCount}</small>
                   )}
+                  <small> • {OUTBOX_STATE_LABELS[operation.state]}</small>
                   {isFutureAutoRetry && (
                     <small className="auto-retry">
                       {' '}
@@ -90,6 +99,17 @@ export function Workspace() {
       )}
       {(active.kind === 'local-note' || active.kind === 'issue') && (
         <TaskDocument entity={active} />
+      )}
+      {active.kind === 'pending-issue' && activePendingIssue && (
+        <div className="task-document">
+          <PendingIssueContent pending={activePendingIssue} embedded />
+        </div>
+      )}
+      {active.kind === 'pending-issue' && !activePendingIssue && (
+        <div className="empty-state">
+          <h2>Задача создана</h2>
+          <p>Issue успешно отправлен на GitHub. Обновите список для просмотра.</p>
+        </div>
       )}
     </section>
   );

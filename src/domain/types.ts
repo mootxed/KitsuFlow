@@ -1,6 +1,15 @@
 export type TaskStatus = 'todo' | 'in_progress' | 'done' | 'postponed' | 'question';
 export type IssuePriority = 'none' | 'low' | 'medium' | 'high' | 'urgent';
-export type SyncState = 'local' | 'pending' | 'syncing' | 'synced' | 'failed' | 'conflict';
+/** Состояния синхронизации сущности. attention/exhausted используются операциями outbox. */
+export type SyncState =
+  | 'local'
+  | 'pending'
+  | 'syncing'
+  | 'synced'
+  | 'failed'
+  | 'conflict'
+  | 'attention'
+  | 'exhausted';
 
 export interface ChecklistItem {
   id: string;
@@ -8,7 +17,8 @@ export interface ChecklistItem {
   checked: boolean;
 }
 
-export type DeviceFlowState =
+/** Фазы OAuth Device Flow (и других flow). Определение здесь — единственное. */
+export type OAuthFlowPhase =
   | { phase: 'idle' }
   | { phase: 'requesting' }
   | {
@@ -18,6 +28,8 @@ export type DeviceFlowState =
       expiresAt: number;
       interval: number;
     }
+  | { phase: 'redirecting' }
+  | { phase: 'callback'; code: string }
   | { phase: 'success' }
   | { phase: 'expired'; message: string }
   | { phase: 'error'; message: string };
@@ -71,6 +83,27 @@ export interface GitHubIssue {
   statusConflict: boolean;
   priorityConflict: boolean;
   accountId: string;
+}
+
+/**
+ * Временная карточка Issue, ожидающая подтверждения от GitHub.
+ * Хранится в отдельной таблице `pendingIssues` (не в `githubIssuesCache`).
+ * После успешного создания атомарно заменяется на `GitHubIssue`.
+ */
+export interface PendingIssue {
+  /** Стабильный уникальный идентификатор — также entityKey в outbox. */
+  clientLocalId: string;
+  repositoryFullName: string;
+  accountId: string;
+  title: string;
+  body: string;
+  state: 'open' | 'closed';
+  derivedStatus: Exclude<TaskStatus, 'question'>;
+  derivedPriority: IssuePriority;
+  labels: IssueLabel[];
+  assignees: string[];
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface Repository {
@@ -165,4 +198,25 @@ export const PRIORITY_LABELS: Record<IssuePriority, string> = {
   medium: 'Средний',
   high: 'Высокий',
   urgent: 'Срочный',
+};
+
+/** Русские названия состояний синхронизации для UI. */
+export const SYNC_STATE_LABELS: Record<SyncState, string> = {
+  local: 'Локально',
+  pending: 'Ожидает отправки',
+  syncing: 'Синхронизируется',
+  synced: 'Синхронизировано',
+  failed: 'Ошибка синхронизации',
+  conflict: 'Конфликт',
+  attention: 'Требует внимания',
+  exhausted: 'Попытки исчерпаны',
+};
+
+/** Русские названия состояний операций outbox. */
+export const OUTBOX_STATE_LABELS: Record<OutboxState, string> = {
+  pending: 'Ожидает',
+  syncing: 'Отправляется',
+  failed: 'Ошибка (автоповтор)',
+  attention: 'Требует внимания',
+  exhausted: 'Попытки исчерпаны',
 };

@@ -1,18 +1,8 @@
 import { APP_CONFIG } from '../config';
+import type { OAuthFlowPhase } from '../domain/types';
 
-export type DeviceFlowState =
-  | { phase: 'idle' }
-  | { phase: 'requesting' }
-  | {
-      phase: 'waiting';
-      userCode: string;
-      verificationUri: string;
-      expiresAt: number;
-      interval: number;
-    }
-  | { phase: 'success' }
-  | { phase: 'expired'; message: string }
-  | { phase: 'error'; message: string };
+/** Переэкспортируем для обратной совместимости. */
+export type { OAuthFlowPhase as DeviceFlowState };
 
 interface DeviceCodeResponse {
   device_code: string;
@@ -58,12 +48,13 @@ async function githubFormPost<T>(
     });
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
-    // Различаем сетевую ошибку и возможную CORS-ошибку браузера
     if (!navigator.onLine) {
       throw new Error('Отсутствует подключение к интернету.');
     }
     throw new Error(
-      `Сетевая ошибка или CORS-блокировка браузера при запросе к ${url}. Если вы используете GitHub Pages, прямые браузерные запросы к OAuth эндпоинтам GitHub блокируются CORS браузером.`,
+      `Сетевая ошибка при запросе к GitHub OAuth. ` +
+        `Если используется GitHub Pages — убедитесь, что приложение зарегистрировано как GitHub App ` +
+        `(не OAuth App). Эндпоинты github.com/login/… могут блокироваться CORS браузером для обычных OAuth App.`,
     );
   }
 
@@ -97,7 +88,7 @@ export class DeviceFlowController {
     this.controller = null;
   }
 
-  async start(onState: (state: DeviceFlowState) => void): Promise<string | null> {
+  async start(onState: (state: OAuthFlowPhase) => void): Promise<string | null> {
     if (this.controller) return null;
     if (!this.clientId) {
       onState({ phase: 'error', message: 'Не задан VITE_GITHUB_CLIENT_ID' });

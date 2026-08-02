@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm';
 import {
   PRIORITY_LABELS,
   STATUS_LABELS,
+  SYNC_STATE_LABELS,
   type GitHubIssue,
   type LocalNote,
   type TaskStatus,
@@ -12,6 +13,7 @@ import {
 import { visibleLabels } from '../domain/github-mapping';
 import { useAppStore } from '../state/app-store';
 import { useShallow } from 'zustand/react/shallow';
+import { PendingIssueContent } from './PendingIssueDocument';
 
 export function DetailsContent({
   note,
@@ -215,7 +217,58 @@ export function DetailsContent({
         />
       </label>
       <div className="markdown-preview">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{body}</ReactMarkdown>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={{
+            // Безопасный рендерер ссылок: блокируем javascript: схемы
+            a: ({ href, children, ...props }) => {
+              const isSafe =
+                href &&
+                !href.startsWith('javascript:') &&
+                !href.startsWith('data:');
+              if (!isSafe) return <span>{children}</span>;
+              return (
+                <a
+                  {...props}
+                  href={href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {children}
+                </a>
+              );
+            },
+            // Безопасный рендерер изображений: ограничиваем домены
+            img: ({ src, alt }) => {
+              const allowedDomains = [
+                'user-images.githubusercontent.com',
+                'camo.githubusercontent.com',
+                'github.githubassets.com',
+                'raw.githubusercontent.com',
+                'avatars.githubusercontent.com',
+                'avatars0.githubusercontent.com',
+                'avatars1.githubusercontent.com',
+                'avatars2.githubusercontent.com',
+                'avatars3.githubusercontent.com',
+              ];
+              try {
+                const url = new URL(src || '');
+                if (!allowedDomains.includes(url.hostname)) {
+                  return (
+                    <span className="blocked-image" title={`Изображение заблокировано: ${src}`}>
+                      🖼 [{alt || 'изображение'}]
+                    </span>
+                  );
+                }
+              } catch {
+                return null;
+              }
+              return <img src={src} alt={alt || ''} style={{ maxWidth: '100%' }} />;
+            },
+          }}
+        >
+          {body}
+        </ReactMarkdown>
       </div>
       <div className="label-list">
         {visibleLabels(issue.labels).map((label) => (
@@ -239,7 +292,9 @@ export function DetailsContent({
           <Check size={13} /> {issue.assignees.join(', ')}
         </p>
       )}
-      <p className={`sync-summary ${issue.syncState}`}>Синхронизация: {issue.syncState}</p>
+      <p className={`sync-summary ${issue.syncState}`}>
+        Синхронизация: {SYNC_STATE_LABELS[issue.syncState]}
+      </p>
       <div className="details-actions">
         <button className="primary" onClick={save}>
           <Save size={14} /> Сохранить
@@ -264,6 +319,11 @@ export function DetailsPanel() {
       ? state.issues.find(
           (item) => `${item.repositoryFullName}#${item.issueNumber}` === selected.key,
         )
+      : undefined,
+  );
+  const pendingIssue = useAppStore((state) =>
+    selected?.kind === 'pending-issue'
+      ? state.pendingIssues.find((p) => p.clientLocalId === selected.clientLocalId)
       : undefined,
   );
   const setSelectedTask = useAppStore((state) => state.setSelectedTask);
@@ -306,7 +366,18 @@ export function DetailsPanel() {
       <button className="panel-close" aria-label="Закрыть панель" onClick={close}>
         <X size={16} />
       </button>
-      <DetailsContent note={note} issue={issue} />
+      {selected.kind === 'pending-issue' && pendingIssue && (
+        <PendingIssueContent pending={pendingIssue} />
+      )}
+      {selected.kind === 'pending-issue' && !pendingIssue && (
+        <div className="details-content">
+          <p className="eyebrow">Задача создана</p>
+          <p>Issue был успешно отправлен на GitHub.</p>
+        </div>
+      )}
+      {selected.kind !== 'pending-issue' && (
+        <DetailsContent note={note} issue={issue} />
+      )}
     </aside>
   );
 }

@@ -490,15 +490,14 @@ export class OutboxProcessor {
         await db.transaction(
           'rw',
           db.githubIssuesCache,
+          db.pendingIssues,
           db.localNotes,
           db.outbox,
           db.tabs,
           async () => {
+            // Удаляем временную карточку из pendingIssues по clientLocalId
             if (clientLocalId) {
-              await db.githubIssuesCache
-                .where('[accountId+repositoryFullName+issueNumber]')
-                .equals([operation.accountId, operation.repositoryFullName, -1])
-                .delete();
+              await db.pendingIssues.delete(clientLocalId);
             }
 
             await db.githubIssuesCache.put(finalIssue);
@@ -609,6 +608,7 @@ export class OutboxProcessor {
       }
 
       if (status === 403) {
+        // 403 = локальная ошибка конкретного репо/операции: переводим в attention и продолжаем
         const hint = 'Убедитесь, что GitHub App установлен с разрешением Issues: Read & write.';
         await db.outbox.update(operation.id, {
           state: 'attention',
@@ -616,7 +616,7 @@ export class OutboxProcessor {
           updatedAt: new Date().toISOString(),
         });
         this.onEvent({ type: 'permission-denied', message: hint });
-        return false;
+        return true; // продолжаем обработку других операций
       }
 
       if (status === 404) {
@@ -663,6 +663,7 @@ export class OutboxProcessor {
           : message,
         updatedAt: new Date().toISOString(),
       });
+      // exhausted — пропускаем и продолжаем очередь
       return true;
     } finally {
       if (heartbeatInterval) {

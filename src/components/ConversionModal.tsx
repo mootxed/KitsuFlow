@@ -105,6 +105,7 @@ export function ConversionModal() {
     <div className="modal-backdrop">
       <form
         className="modal conversion-modal"
+        aria-label="Конвертация в Issue"
         onSubmit={(event) => {
           event.preventDefault();
           if (repository)
