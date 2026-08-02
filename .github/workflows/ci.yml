@@ -27,6 +27,11 @@ jobs:
       - run: pnpm build
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:e2e
+      - run: pnpm test:e2e:production
+      - run: pnpm build
+        env:
+          VITE_BASE_PATH: /KitsuFlow/
+          VITE_OAUTH_PROXY_URL: https://oauth-proxy.test
 
   dependency-review:
     if: github.event_name == 'pull_request'

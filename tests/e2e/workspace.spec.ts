@@ -71,7 +71,9 @@ test('local note converts to Issue and tabs restore', async ({ page }) => {
   await page.getByLabel('Название').fill('Convert local note');
   await page.getByLabel('Описание').fill('Test detail');
   await page.getByRole('button', { name: 'Создать', exact: true }).click();
-  await expect(page.locator('.task-title', { hasText: 'Convert local note' }).first()).toBeVisible();
+  await expect(
+    page.locator('.task-title', { hasText: 'Convert local note' }).first(),
+  ).toBeVisible();
 
   // Pin repository
   await page.getByRole('button', { name: 'Выбрать репозитории' }).click();
@@ -82,13 +84,12 @@ test('local note converts to Issue and tabs restore', async ({ page }) => {
   await page.locator('.task-title', { hasText: 'Convert local note' }).first().click();
   await page.getByRole('button', { name: 'Превратить в Issue' }).click();
   await expect(page.getByLabel('Конвертация в Issue')).toBeVisible();
-  await page
-    .getByLabel('Конвертация в Issue')
-    .getByLabel('Репозиторий')
-    .selectOption('acme/repo');
+  await page.getByLabel('Конвертация в Issue').getByLabel('Репозиторий').selectOption('acme/repo');
   await page.getByRole('button', { name: 'Создать Issue' }).click();
 
-  await expect(page.locator('.task-title', { hasText: 'Convert local note' }).first()).toBeVisible();
+  await expect(
+    page.locator('.task-title', { hasText: 'Convert local note' }).first(),
+  ).toBeVisible();
 
   // Open repository in a new tab via Shift + click
   const repoLink = page.locator('.repository-link').first();

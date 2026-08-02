@@ -1,5 +1,14 @@
 import { useDroppable } from '@dnd-kit/core';
-import { AlertCircle, CircleDot, FolderGit2, LogIn, LogOut, Plus, RefreshCw, Rows3 } from 'lucide-react';
+import {
+  AlertCircle,
+  CircleDot,
+  FolderGit2,
+  LogIn,
+  LogOut,
+  Plus,
+  RefreshCw,
+  Rows3,
+} from 'lucide-react';
 import { APP_CONFIG } from '../config';
 import type { Repository } from '../domain/types';
 import { useAppStore } from '../state/app-store';
@@ -43,6 +52,8 @@ function LegacyClaimBanner() {
     counts.issues > 0 && `${counts.issues} Issues`,
     counts.notes > 0 && `${counts.notes} заметок`,
     counts.outbox > 0 && `${counts.outbox} в очереди`,
+    counts.pendingIssues > 0 && `${counts.pendingIssues} pending Issues`,
+    counts.labels + counts.assignees > 0 && `${counts.labels + counts.assignees} кешей`,
   ]
     .filter(Boolean)
     .join(', ');
@@ -61,7 +72,7 @@ function LegacyClaimBanner() {
             Привязать
           </button>
           <button className="small" onClick={dismissLegacyClaim}>
-            Пропустить
+            Не показывать снова
           </button>
         </div>
       </div>
@@ -135,9 +146,16 @@ export function Sidebar() {
                 <LogIn size={15} /> Войти через GitHub
               </button>
             ) : (
-              <button className="sidebar-link primary-dark" onClick={() => void login()}>
-                <LogIn size={15} /> Подключить GitHub
-              </button>
+              <>
+                <button className="sidebar-link primary-dark" onClick={() => void loginWithPkce()}>
+                  <LogIn size={15} /> Войти через GitHub
+                </button>
+                {APP_CONFIG.oauth.legacyDeviceFlowEnabled && (
+                  <button className="sidebar-link" onClick={() => void login()}>
+                    Legacy Device Flow (локально)
+                  </button>
+                )}
+              </>
             )}
           </div>
         )}

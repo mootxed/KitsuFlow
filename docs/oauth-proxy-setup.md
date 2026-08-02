@@ -1,114 +1,53 @@
-# GitHub OAuth PKCE CORS Proxy Setup
+# GitHub OAuth PKCE proxy
 
-GitHub Pages — это статический хостинг (SPA). Браузёры блокируют прямые POST-запросы к `https://github.com/login/oauth/access_token` из-за политики **CORS** (Cross-Origin Resource Sharing).
+GitHub не разрешает browser CORS для `POST /login/oauth/access_token`. Поэтому production OAuth на GitHub Pages использует минимальный Cloudflare Worker. Клиентское приложение остаётся статическим и не содержит `client_secret`; Worker — обязательный backend-компонент для обмена кода.
 
-Для поддержки безопасной OAuth-авторизации с PKCE (Authorization Code Flow) без хранения `client_secret` на клиенте необходим минимальный serverless proxy (Cloudflare Worker).
+Исходник Worker находится в [`oauth-worker/src/index.ts`](../oauth-worker/src/index.ts), пример конфигурации — в [`oauth-worker/wrangler.toml.example`](../oauth-worker/wrangler.toml.example).
 
----
+## Поток
 
-## Архитектура PKCE с Proxy
-
-```
-[ Браузер (Pages) ] --(1) /authorize (PKCE challenge)--> [ GitHub ]
-[ Браузер (Pages) ] <--(2) Redirect ?code=...----------- [ GitHub ]
-[ Браузер (Pages) ] --(3) POST {code, verifier}---------> [ Worker Proxy ]
-                                                         [ Worker Proxy ] --(4) POST + client_secret --> [ GitHub ]
-                                                         [ Worker Proxy ] <--(5) {access_token} --------- [ GitHub ]
-[ Браузер (Pages) ] <--(6) {access_token} -------------- [ Worker Proxy ]
+```text
+Pages → GitHub /authorize (state + PKCE challenge)
+GitHub → Pages callback (?code&state)
+Pages → Worker { code, code_verifier, redirect_uri }
+Worker → GitHub /access_token (+ client_secret)
+Worker → Pages { access_token }
 ```
 
----
+Callback только обменивает и сохраняет token в `sessionStorage`; затем `initialize()` один раз загружает `/user`, installations, repositories, outbox и Issues. Параметры `code`, `state`, `error`, `error_description`, `error_uri` удаляются из URL с сохранением hash-route.
 
-## Исходный код Cloudflare Worker (`worker.js`)
+## Развёртывание
 
-Разверните следующий код в бесплатном аккаунте [Cloudflare Workers](https://workers.cloudflare.com/):
+1. Скопируйте `oauth-worker/wrangler.toml.example` в `oauth-worker/wrangler.toml` и укажите:
+   - `GITHUB_CLIENT_ID`;
+   - `ALLOWED_ORIGINS`, например `https://mootxed.github.io,http://localhost:4173,http://127.0.0.1:4173`;
+   - `ALLOWED_REDIRECT_URIS`, например `https://mootxed.github.io/KitsuFlow/,http://localhost:4173/`.
+2. Сохраните секрет только в Cloudflare:
 
-```javascript
-export default {
-  async fetch(request, env) {
-    // Обработка CORS preflight
-    if (request.method === 'OPTIONS') {
-      return new Response(null, {
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Accept',
-          'Access-Control-Max-Age': '86400',
-        },
-      });
-    }
+   ```bash
+   cd oauth-worker
+   wrangler secret put GITHUB_CLIENT_SECRET
+   wrangler deploy
+   ```
 
-    if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
-        status: 405,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-      });
-    }
+3. Добавьте публичный URL Worker в `.env` и GitHub Actions Variable:
 
-    try {
-      const { code, code_verifier, redirect_uri } = await request.json();
+   ```dotenv
+   VITE_GITHUB_CLIENT_ID=your-public-client-id
+   VITE_OAUTH_PROXY_URL=https://kitsuflow-oauth.example.workers.dev
+   VITE_BASE_PATH=/KitsuFlow/
+   ```
 
-      if (!code || !code_verifier) {
-        return new Response(JSON.stringify({ error: 'Missing code or code_verifier' }), {
-          status: 400,
-          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-        });
-      }
+4. Callback URL в GitHub OAuth/GitHub App должен в точности совпадать с `redirect_uri`, включая trailing slash.
 
-      // Обмен кода на access_token на стороне сервера
-      const ghResponse = await fetch('https://github.com/login/oauth/access_token', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          Accept: 'application/json',
-        },
-        body: new URLSearchParams({
-          client_id: env.GITHUB_CLIENT_ID,
-          client_secret: env.GITHUB_CLIENT_SECRET,
-          code,
-          code_verifier,
-          redirect_uri,
-        }),
-      });
+## Ограничения безопасности Worker
 
-      const data = await ghResponse.json();
+Worker проверяет `Origin`, разрешает только allowlist и localhost, проверяет тип/длину `code`, `code_verifier`, `redirect_uri` и точное вхождение redirect URI в allowlist. Все ответы имеют `Cache-Control: no-store`; CORS никогда не использует `*`. Внутренние исключения не возвращаются клиенту. Код, verifier, token и secret не логируются.
 
-      return new Response(JSON.stringify(data), {
-        status: ghResponse.status,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-        },
-      });
-    } catch (err) {
-      return new Response(JSON.stringify({ error: err.message }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-      });
-    }
-  },
-};
-```
+`GITHUB_CLIENT_SECRET` нельзя задавать как `VITE_*`, Actions Variable или включать в bundle. `VITE_OAUTH_PROXY_URL` не является секретом.
 
----
+## Device Flow
 
-## Настройка переменных окружения
+Device Flow не является production fallback. Он доступен в Vite dev mode или при явном `VITE_ENABLE_LEGACY_DEVICE_FLOW=true`; на GitHub Pages его browser-запросы могут быть заблокированы CORS. Если proxy не настроен, production UI показывает ошибку конфигурации.
 
-### 1. Переменные в Cloudflare Worker:
-- `GITHUB_CLIENT_ID` — Client ID вашего GitHub App / OAuth App
-- `GITHUB_CLIENT_SECRET` — Client Secret вашего GitHub App / OAuth App
-
-### 2. Переменные в `.env` вашего KitsuFlow приложения:
-```env
-VITE_GITHUB_CLIENT_ID=ваш_client_id
-VITE_OAUTH_PROXY_URL=https://kitsuflow-oauth.your-worker.workers.dev
-VITE_BASE_PATH=/KitsuFlow/
-```
-
----
-
-## Fallback (Device Flow)
-
-Если `VITE_OAUTH_PROXY_URL` не задан, KitsuFlow автоматически переключается на **Device Flow** (`https://github.com/login/device/code`). 
-
-*Примечание:* Device Flow корректно работает без прокси только при использовании **GitHub App** (не OAuth App).
+Локальные mock-тесты проверяют PKCE/state/proxy/CSP и Pages subpath, но реальный OAuth считается проверенным только после ручного входа на опубликованном Pages с настоящим GitHub App/OAuth App и Worker.

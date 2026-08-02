@@ -2,11 +2,11 @@
 
 KitsuFlow — компактный local-first менеджер задач для разработчиков. GitHub Issues остаются источником истины для задач репозиториев, а быстрые личные заметки хранятся только в браузере и при необходимости публикуются как Issues.
 
-Это полностью статическое React-приложение: backend, PAT и `client_secret` не нужны. Проект можно разместить на GitHub Pages.
+Интерфейс и данные приложения размещаются статически на GitHub Pages. Для production OAuth используется минимальный backend-компонент — Cloudflare Worker: только он хранит `client_secret` и обменивает authorization code на token. `client_secret` никогда не попадает в Vite bundle, Actions Variables или браузер.
 
 ## Возможности первой версии
 
-- GitHub App Device Flow с токеном только в `sessionStorage`;
+- GitHub OAuth Authorization Code + PKCE через ограниченный Cloudflare Worker; локальный legacy Device Flow включается только явно;
 - получение установок GitHub App и выбор закреплённых репозиториев;
 - загрузка и локальный кеш GitHub Issues без Pull Requests;
 - локальные заметки, теги и чек-листы в IndexedDB;
@@ -40,6 +40,7 @@ corepack pnpm test
 corepack pnpm build
 corepack pnpm exec playwright install chromium
 corepack pnpm test:e2e
+corepack pnpm test:e2e:production
 ```
 
 ## Настройка GitHub App
@@ -47,26 +48,27 @@ corepack pnpm test:e2e
 1. Откройте **GitHub → Settings → Developer settings → GitHub Apps → New GitHub App**.
 2. Укажите любое уникальное имя и Homepage URL (`http://localhost:5173` для локальной разработки или адрес Pages).
 3. Webhook отключите: эта статическая версия его не использует.
-4. Включите **Enable Device Flow**.
+4. Укажите callback URL: `https://<owner>.github.io/<repository>/` (для разработки также разрешите локальный callback в Worker).
 5. В **Repository permissions** задайте:
    - **Issues: Read and write**;
    - **Metadata: Read-only** (GitHub включает это базовое разрешение автоматически).
-6. Сохраните приложение и скопируйте публичный **Client ID**. Client secret создавать или передавать приложению не требуется.
+6. Сохраните приложение и скопируйте публичный **Client ID**. Создайте `client_secret`, но храните его только как Cloudflare Worker Secret.
 7. На странице приложения нажмите **Install App** и разрешите доступ только к нужным репозиториям.
 8. Заполните `.env`:
 
 ```dotenv
 VITE_GITHUB_CLIENT_ID=Iv1.public_client_id
 VITE_GITHUB_APP_SLUG=your-app-slug
+VITE_OAUTH_PROXY_URL=https://kitsuflow-oauth.example.workers.dev
 # Альтернатива slug — полный URL установки:
 # VITE_GITHUB_APP_INSTALL_URL=https://github.com/apps/your-app/installations/new
 VITE_BASE_PATH=/
 VITE_APP_NAME=KitsuFlow
 ```
 
-После Device Flow клиент проверяет токен запросом текущего пользователя. Токен живёт только в `sessionStorage` (ключ `kitsuflow.github.access-token`), не попадает в Zustand persistence, IndexedDB, URL или логи и удаляется при выходе/401.
+После PKCE callback клиент получает token через Worker и проверяет его запросом текущего пользователя. Токен живёт только в `sessionStorage` (ключ `kitsuflow.github.access-token`), не попадает в Zustand persistence, IndexedDB, URL или логи и удаляется при выходе/401. Настройка Worker: [docs/oauth-proxy-setup.md](docs/oauth-proxy-setup.md).
 
-## GitHub Pages и ограничения Device Flow
+## GitHub Pages и production OAuth
 
 Workflow [deploy-pages.yml](.github/workflows/deploy-pages.yml) публикует `dist` при push в `main`.
 
@@ -74,20 +76,21 @@ Workflow [deploy-pages.yml](.github/workflows/deploy-pages.yml) публикуе
 2. В **Settings → Secrets and variables → Actions → Variables** добавьте:
    - `VITE_GITHUB_CLIENT_ID`;
    - `VITE_GITHUB_APP_SLUG` или `VITE_GITHUB_APP_INSTALL_URL`.
-3. Добавьте Pages URL в Homepage URL GitHub App.
+   - `VITE_OAUTH_PROXY_URL` — публичный HTTPS URL Worker, без секретов.
+3. Добавьте Pages URL в Homepage/callback URL OAuth App и в `ALLOWED_ORIGINS`/`ALLOWED_REDIRECT_URIS` Worker.
 4. Выполните push в основную ветку.
 
-> **Обратите внимание:** Прямой Device Flow непосредственно из браузера на GitHub Pages может быть заблокирован политикой CORS браузера для эндпоинтов `https://github.com/login/device/code` и `https://github.com/login/oauth/access_token`. Настоящее поведение на production build следует дополнительно протестировать с реальным GitHub App.
+Без `VITE_OAUTH_PROXY_URL` кнопка входа показывает ошибку конфигурации: скрытого production fallback на Device Flow нет. Device Flow остаётся только для `DEV` или `VITE_ENABLE_LEGACY_DEVICE_FLOW=true`, потому что browser CORS делает его ненадёжным на Pages.
 
-Workflow передаёт `VITE_BASE_PATH=/<repository-name>/`. Приложение использует `HashRouter`/hash-навигацию и не требует серверного fallback. Никаких секретов в workflow нет: `client_id` и URL установки публичны.
+Workflow передаёт `VITE_BASE_PATH=/<repository-name>/`. CSP формируется Vite-плагином во время сборки: в `connect-src` добавляется только origin настроенного proxy, а не произвольный Worker URL из исходного `index.html`. В Actions Variables нет секретов: `client_id`, proxy URL и URL установки публичны.
 
 ## Хранение данных и миграция
 
-| Место            | Данные                                                                                                     |
-| ---------------- | ---------------------------------------------------------------------------------------------------------- |
-| GitHub           | Issues, state, обычные labels, `kf:status:*`, `kf:priority:*`, assignees                                   |
-| IndexedDB        | `kitsuflow-db`: локальные заметки, кеш Issues/репозиториев/labels, outbox, вкладки, настройки и метаданные |
-| `sessionStorage` | `kitsuflow.github.access-token`: только OAuth access token активной вкладки браузера                       |
+| Место            | Данные                                                                                                                 |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| GitHub           | Issues, state, обычные labels, `kf:status:*`, `kf:priority:*`, assignees                                               |
+| IndexedDB        | `kitsuflow-db` v6: заметки, кеш реальных Issues/репозиториев, `pendingIssues`, outbox, вкладки, настройки и метаданные |
+| `sessionStorage` | `kitsuflow.github.access-token`: только OAuth access token активной вкладки браузера                                   |
 
 ### Автоматическая миграция IndexedDB
 
@@ -111,7 +114,7 @@ Service Worker кеширует только оболочку приложени
 
 ## Безопасность
 
-- Никогда не добавляйте PAT, client secret или access token в `.env`, репозиторий и Actions variables.
+- Никогда не добавляйте PAT, client secret или access token в Vite `.env`, репозиторий и Actions Variables. `GITHUB_CLIENT_SECRET` хранится только через `wrangler secret put`.
 - `.env` исключён через `.gitignore`; публикуйте только `.env.example`.
 - Markdown рендерится React-компонентами без `dangerouslySetInnerHTML` и без raw HTML.
 - CSP ограничивает scripts/images/connect endpoints GitHub API и OAuth.
@@ -124,9 +127,9 @@ Service Worker кеширует только оболочку приложени
 
 ## Известные ограничения
 
-- Device Flow требует ручной настройки/установки GitHub App владельцем развёртывания.
+- Production OAuth требует развёрнутый и настроенный Worker; локальный mock proxy не доказывает работу реального опубликованного OAuth.
 - Offline-изменения не синхронизируются, пока вкладка/PWA снова не окажется онлайн и пользователь не войдёт.
-- Временная карточка создания не может безопасно узнать, был ли создан Issue при неоднозначном сетевом разрыве.
+- При неоднозначном сетевом разрыве GitHub не даёт idempotency key: UI требует ручной проверки репозитория и отдельного подтверждения повторного POST.
 - Нет ручной сортировки внутри колонок: используется `updatedAt`.
 - На экранах уже примерно 920 px сохраняется функциональность, но отдельного мобильного UX нет.
 - ETag-кеширование оставлено на транспортный слой GitHub/CDN; предметный кеш явно обновляется после сетевого ответа.

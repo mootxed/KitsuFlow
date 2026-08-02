@@ -10,6 +10,11 @@ export const APP_CONFIG = {
     apiVersion: '2022-11-28',
     accept: 'application/vnd.github+json',
   },
+  oauth: {
+    proxyUrl: import.meta.env.VITE_OAUTH_PROXY_URL || '',
+    legacyDeviceFlowEnabled:
+      import.meta.env.DEV || import.meta.env.VITE_ENABLE_LEGACY_DEVICE_FLOW === 'true',
+  },
   labels: {
     status: {
       inProgress: 'kf:status:in-progress',

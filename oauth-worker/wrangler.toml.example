@@ -1,0 +1,10 @@
+name = "kitsuflow-oauth-proxy"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+
+[vars]
+GITHUB_CLIENT_ID = "your-github-oauth-client-id"
+ALLOWED_ORIGINS = "https://mootxed.github.io,http://localhost:4173,http://127.0.0.1:4173"
+ALLOWED_REDIRECT_URIS = "https://mootxed.github.io/KitsuFlow/,http://localhost:4173/"
+
+# Store GITHUB_CLIENT_SECRET only with: wrangler secret put GITHUB_CLIENT_SECRET

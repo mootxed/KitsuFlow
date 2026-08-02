@@ -2,6 +2,12 @@ import { create } from 'zustand';
 import { db } from '../data/db';
 import { assertAccountId, labelsForMove, visibleLabels } from '../domain/github-mapping';
 import {
+  defaultTab,
+  ensureDefaultTab,
+  tabEntitySignature,
+  titleForTabEntity,
+} from '../domain/tabs';
+import {
   createLocalNote,
   extractChecklistFromMarkdown,
   noteToIssueBody,
@@ -23,9 +29,12 @@ import type {
   WorkspaceTab,
 } from '../domain/types';
 import { GitHubApi } from '../github/api';
+import { parseGitHubError } from '../github/errors';
+import { APP_CONFIG } from '../config';
 import { DeviceFlowController } from '../github/device-flow';
 import {
   buildAuthUrl,
+  cleanOAuthCallbackUrl,
   consumePkceState,
   exchangeCode,
   generatePkce,
@@ -34,6 +43,12 @@ import {
 } from '../github/oauth-pkce';
 import { session } from '../github/session';
 import { OutboxProcessor, type SyncEvent } from '../sync/outbox';
+import {
+  beginRepositoryRefresh,
+  isLatestRepositoryRefresh,
+  markRepositoryMutation,
+  wasMutatedAfter,
+} from '../sync/repository-revisions';
 
 export type SelectedTask =
   | { kind: 'note'; id: string }
@@ -69,7 +84,17 @@ export interface ConversionDialogState {
 /** Флаг legacy-unassigned данных для диалога присвоения аккаунту. */
 export interface LegacyClaimState {
   hasLegacyData: boolean;
-  counts: { repositories: number; issues: number; notes: number; outbox: number; tabs: number };
+  counts: {
+    repositories: number;
+    issues: number;
+    pendingIssues: number;
+    notes: number;
+    outbox: number;
+    tabs: number;
+    labels: number;
+    assignees: number;
+    syncMetadata: number;
+  };
 }
 
 interface AppState {
@@ -174,6 +199,18 @@ interface AppState {
   setRepositoryPickerOpen: (open: boolean) => void;
   setConversionNoteId: (id: string | null) => void;
   retryOperation: (id: string) => Promise<void>;
+  retryAmbiguousOperation: (id: string) => Promise<void>;
+  updatePendingOperation: (
+    clientLocalId: string,
+    changes: {
+      title?: string | undefined;
+      body?: string | undefined;
+      repositoryFullName?: string | undefined;
+      labels?: string[] | undefined;
+      assignees?: string[] | undefined;
+    },
+  ) => Promise<void>;
+  cancelPendingOperation: (clientLocalId: string) => Promise<void>;
   getRepositoryLabels: (
     repositoryFullName: string,
   ) => Promise<Array<{ name: string; color: string }>>;
@@ -192,26 +229,15 @@ let outboxProcessor: OutboxProcessor;
 const issueKey = (issue: Pick<GitHubIssue, 'repositoryFullName' | 'issueNumber'>) =>
   `${issue.repositoryFullName}#${issue.issueNumber}`;
 
-const titleForEntity = (entity: TabEntity): string => {
-  if (entity.kind === 'all') return 'Все задачи';
-  if (entity.kind === 'repository')
-    return entity.repositoryFullName.split('/')[1] || entity.repositoryFullName;
-  if (entity.kind === 'local-note') return 'Заметка';
-  if (entity.kind === 'pending-issue')
-    return `${entity.repositoryFullName.split('/')[1]} (создаётся...)`;
-  return `${entity.repositoryFullName.split('/')[1]} #${entity.issueNumber}`;
-};
-
-const entitySignature = (entity: TabEntity): string => JSON.stringify(entity);
-
 export async function loadLocalDeviceState() {
-  const [notes, tabs] = await Promise.all([
+  const [notes, storedTabs] = await Promise.all([
     db.localNotes
       .filter((note) => note.accountId === null)
       .sortBy('updatedAt')
       .then((res) => res.reverse()),
     db.tabs.filter((tab) => tab.accountId === null).sortBy('position'),
   ]);
+  const tabs = await persistTabs(ensureDefaultTab(storedTabs, null), null);
 
   return {
     repositories: [],
@@ -225,7 +251,7 @@ export async function loadLocalDeviceState() {
 
 export async function loadGitHubAccountState(accountId: string) {
   assertAccountId(accountId);
-  const [repositories, notes, issues, pendingIssues, tabs, outbox] = await Promise.all([
+  const [repositories, notes, issues, pendingIssues, storedTabs, outbox] = await Promise.all([
     db.repositoriesCache.where('accountId').equals(accountId).toArray(),
     db.localNotes
       .filter((note) => note.accountId === null || note.accountId === accountId)
@@ -236,6 +262,7 @@ export async function loadGitHubAccountState(accountId: string) {
     db.tabs.where('accountId').equals(accountId).sortBy('position'),
     db.outbox.where('accountId').equals(accountId).sortBy('createdAt'),
   ]);
+  const tabs = await persistTabs(ensureDefaultTab(storedTabs, accountId), accountId);
 
   return {
     repositories,
@@ -247,9 +274,12 @@ export async function loadGitHubAccountState(accountId: string) {
   };
 }
 
-async function persistTabs(tabs: WorkspaceTab[], accountId?: string | null): Promise<void> {
+async function persistTabs(
+  tabs: WorkspaceTab[],
+  accountId?: string | null,
+): Promise<WorkspaceTab[]> {
   const currentAccountId = accountId || null;
-  const tabsWithAccount = tabs.map((t) => ({ ...t, accountId: currentAccountId }));
+  const tabsWithAccount = ensureDefaultTab(tabs, currentAccountId);
   await db.transaction('rw', db.tabs, async () => {
     if (currentAccountId) {
       await db.tabs.where('accountId').equals(currentAccountId).delete();
@@ -259,20 +289,63 @@ async function persistTabs(tabs: WorkspaceTab[], accountId?: string | null): Pro
     }
     await db.tabs.bulkPut(tabsWithAccount);
   });
+  return tabsWithAccount;
 }
 
 /** Проверяет наличие данных с accountId === 'legacy-unassigned'. */
-async function checkLegacyData(): Promise<LegacyClaimState> {
-  const [repositories, issues, notes, outbox, tabs] = await Promise.all([
+async function checkLegacyData(accountId: string): Promise<LegacyClaimState> {
+  const dismissal = await db.settings.get(`legacy-claim:${accountId}`);
+  const [
+    repositories,
+    issues,
+    pendingIssues,
+    notes,
+    outbox,
+    tabs,
+    labels,
+    assignees,
+    syncMetadata,
+  ] = await Promise.all([
     db.repositoriesCache.where('accountId').equals('legacy-unassigned').count(),
     db.githubIssuesCache.where('accountId').equals('legacy-unassigned').count(),
+    db.pendingIssues.where('accountId').equals('legacy-unassigned').count(),
     db.localNotes.filter((n) => n.accountId === 'legacy-unassigned').count(),
     db.outbox.where('accountId').equals('legacy-unassigned').count(),
     db.tabs.where('accountId').equals('legacy-unassigned').count(),
+    db.repositoryLabelsCache.where('accountId').equals('legacy-unassigned').count(),
+    db.repositoryAssigneesCache.where('accountId').equals('legacy-unassigned').count(),
+    db.syncMetadata.where('accountId').equals('legacy-unassigned').count(),
   ]);
-  const hasLegacyData = repositories + issues + notes + outbox + tabs > 0;
-  return { hasLegacyData, counts: { repositories, issues, notes, outbox, tabs } };
+  const counts = {
+    repositories,
+    issues,
+    pendingIssues,
+    notes,
+    outbox,
+    tabs,
+    labels,
+    assignees,
+    syncMetadata,
+  };
+  const hasLegacyData =
+    dismissal?.value !== 'never' && Object.values(counts).some((count) => count > 0);
+  return { hasLegacyData, counts };
 }
+
+const emptyLegacyClaim = (): LegacyClaimState => ({
+  hasLegacyData: false,
+  counts: {
+    repositories: 0,
+    issues: 0,
+    pendingIssues: 0,
+    notes: 0,
+    outbox: 0,
+    tabs: 0,
+    labels: 0,
+    assignees: 0,
+    syncMetadata: 0,
+  },
+});
 
 let listenersAttached = false;
 export function attachConnectivityListeners(): void {
@@ -304,6 +377,8 @@ export const useAppStore = create<AppState>((set, get) => {
     const { selectedTask, sessionGeneration } = get();
     if (selectedTask?.kind === 'pending-issue' && selectedTask.clientLocalId === String(tempId)) {
       set({ selectedTask: { kind: 'issue', key: issueKey(realIssue) } });
+    } else if (selectedTask?.kind === 'note' && selectedTask.id === String(tempId)) {
+      set({ selectedTask: { kind: 'issue', key: issueKey(realIssue) } });
     }
     const currentAccountId = get().user ? String(get().user?.id) : null;
     // Проверяем, что сессия не изменилась пока ждали
@@ -312,7 +387,12 @@ export const useAppStore = create<AppState>((set, get) => {
       ? await loadGitHubAccountState(currentAccountId)
       : await loadLocalDeviceState();
     if (get().sessionGeneration !== sessionGeneration) return;
-    set({ tabs: cached.tabs, issues: cached.issues, pendingIssues: cached.pendingIssues, outbox: cached.outbox });
+    set({
+      tabs: cached.tabs,
+      issues: cached.issues,
+      pendingIssues: cached.pendingIssues,
+      outbox: cached.outbox,
+    });
   };
 
   const handleSyncEvent = async (event: SyncEvent) => {
@@ -357,6 +437,32 @@ export const useAppStore = create<AppState>((set, get) => {
     onIssueCreated: handleIssueCreated,
   });
 
+  const restoreAuthenticatedSession = async (
+    token: string,
+    generation: number,
+    authAfterRestore?: OAuthFlowPhase,
+  ): Promise<boolean> => {
+    const api = new GitHubApi(token);
+    const user = await api.getCurrentUser();
+    if (get().sessionGeneration !== generation) return false;
+    session.setToken(token);
+    const accountId = String(user.id);
+    const cached = await loadGitHubAccountState(accountId);
+    if (get().sessionGeneration !== generation) return false;
+    set({
+      api,
+      user,
+      error: null,
+      ...cached,
+      ...(authAfterRestore ? { auth: authAfterRestore } : {}),
+    });
+    set({ legacyClaim: await checkLegacyData(accountId) });
+    await get().refreshRepositories();
+    await outboxProcessor.process();
+    await get().refreshIssues();
+    return true;
+  };
+
   return {
     initialized: false,
     loading: true,
@@ -378,7 +484,7 @@ export const useAppStore = create<AppState>((set, get) => {
     error: null,
     rateLimitUntil: null,
     sessionGeneration: 0,
-    legacyClaim: { hasLegacyData: false, counts: { repositories: 0, issues: 0, notes: 0, outbox: 0, tabs: 0 } },
+    legacyClaim: emptyLegacyClaim(),
 
     initialize: async () => {
       attachConnectivityListeners();
@@ -386,60 +492,45 @@ export const useAppStore = create<AppState>((set, get) => {
       // Проверяем OAuth callback в URL (после редиректа с GitHub)
       const callbackHandled = await get().handleOAuthCallback(new URL(window.location.href));
       if (callbackHandled) {
-        // Очищаем ?code=&state= из URL без перезагрузки
-        const base = import.meta.env.BASE_URL || '/';
-        window.history.replaceState({}, '', base);
+        window.history.replaceState({}, '', cleanOAuthCallbackUrl(new URL(window.location.href)));
       }
 
-      const currentUser = get().user;
-      const currentAccountId = currentUser ? String(currentUser.id) : null;
-      const cached = currentAccountId
-        ? await loadGitHubAccountState(currentAccountId)
+      const existingUser = get().user;
+      const cached = existingUser
+        ? await loadGitHubAccountState(String(existingUser.id))
         : await loadLocalDeviceState();
-
-      let tabs = cached.tabs;
-      if (!tabs.length) {
-        tabs = [
-          {
-            id: crypto.randomUUID(),
-            entity: { kind: 'all' },
-            title: 'Все задачи',
-            position: 0,
-            active: true,
-            accountId: currentAccountId,
-          },
-        ];
-        await persistTabs(tabs, currentAccountId);
-      }
-      set({ ...cached, tabs, loading: false, initialized: true });
+      set({ ...cached, loading: false, initialized: true });
 
       const token = session.getToken();
       if (token) {
-        const api = new GitHubApi(token);
         const gen = get().sessionGeneration;
         try {
-          const user = await api.getCurrentUser();
-          if (get().sessionGeneration !== gen) return;
-          const accountId = String(user.id);
-          const userCached = await loadGitHubAccountState(accountId);
-          if (get().sessionGeneration !== gen) return;
-          set({ api, user, error: null, ...userCached });
-
-          // Проверяем legacy-unassigned данные
-          const legacyClaim = await checkLegacyData();
-          set({ legacyClaim });
-
-          await get().refreshRepositories();
-          await outboxProcessor.process();
-          await get().refreshIssues();
-        } catch {
+          const callbackSucceeded = get().auth.phase === 'success';
+          await restoreAuthenticatedSession(
+            token,
+            gen,
+            callbackSucceeded ? { phase: 'success' } : undefined,
+          );
+          if (callbackSucceeded) setTimeout(() => set({ auth: { phase: 'idle' } }), 1500);
+        } catch (error) {
           if (get().sessionGeneration !== gen) return;
           session.clear();
           const localCached = await loadLocalDeviceState();
           set({
             api: null,
             user: null,
-            error: 'Сессия GitHub недействительна. Локальные данные доступны.',
+            error:
+              get().auth.phase === 'success'
+                ? 'Токен получен, но восстановить сессию GitHub не удалось.'
+                : 'Сессия GitHub недействительна. Локальные данные доступны.',
+            auth:
+              get().auth.phase === 'success'
+                ? {
+                    phase: 'error',
+                    message:
+                      error instanceof Error ? error.message : 'Не удалось восстановить сессию.',
+                  }
+                : get().auth,
             ...localCached,
           });
         }
@@ -447,30 +538,24 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     login: async () => {
+      if (!APP_CONFIG.oauth.legacyDeviceFlowEnabled) {
+        set({
+          auth: {
+            phase: 'error',
+            message:
+              'Legacy Device Flow отключён. Для production-входа настройте VITE_OAUTH_PROXY_URL.',
+          },
+        });
+        return;
+      }
       if (deviceFlow.running) return;
       set({ error: null });
       const token = await deviceFlow.start((auth) => set({ auth }));
       if (!token) return;
-      const api = new GitHubApi(token);
       const gen = get().sessionGeneration + 1;
       set({ sessionGeneration: gen });
       try {
-        const user = await api.getCurrentUser();
-        if (get().sessionGeneration !== gen) return;
-        session.setToken(token);
-        const accountId = String(user.id);
-        const userCached = await loadGitHubAccountState(accountId);
-        if (get().sessionGeneration !== gen) return;
-
-        set({ api, user, auth: { phase: 'idle' }, error: null, ...userCached });
-
-        // Проверяем legacy-unassigned данные
-        const legacyClaim = await checkLegacyData();
-        set({ legacyClaim });
-
-        await get().refreshRepositories();
-        await outboxProcessor.process();
-        await get().refreshIssues();
+        await restoreAuthenticatedSession(token, gen, { phase: 'idle' });
       } catch {
         if (get().sessionGeneration !== gen) return;
         session.clear();
@@ -488,6 +573,16 @@ export const useAppStore = create<AppState>((set, get) => {
       const clientId = import.meta.env.VITE_GITHUB_CLIENT_ID;
       if (!clientId) {
         set({ auth: { phase: 'error', message: 'Не задан VITE_GITHUB_CLIENT_ID' } });
+        return;
+      }
+      if (!APP_CONFIG.oauth.proxyUrl) {
+        set({
+          auth: {
+            phase: 'error',
+            message:
+              'OAuth proxy не настроен: задайте VITE_OAUTH_PROXY_URL. Production OAuth без Worker недоступен.',
+          },
+        });
         return;
       }
       set({ auth: { phase: 'requesting' }, error: null });
@@ -511,14 +606,33 @@ export const useAppStore = create<AppState>((set, get) => {
       const params = parseCallback(url);
       if (!params) return false;
 
+      if (params.kind === 'error') {
+        consumePkceState();
+        const description = params.errorDescription || params.error;
+        set({
+          auth: {
+            phase: 'error',
+            message:
+              params.error === 'access_denied'
+                ? `Вы отменили вход через GitHub. ${description === params.error ? '' : description}`.trim()
+                : `GitHub отклонил авторизацию: ${description}`,
+          },
+        });
+        return true;
+      }
+
       const pkce = consumePkceState();
       if (!pkce) {
-        set({ auth: { phase: 'error', message: 'OAuth state не найден в сессии. Попробуйте снова.' } });
+        set({
+          auth: { phase: 'error', message: 'OAuth state не найден в сессии. Попробуйте снова.' },
+        });
         return true;
       }
 
       if (params.state !== pkce.oauthState) {
-        set({ auth: { phase: 'error', message: 'OAuth state не совпадает. Возможна CSRF-атака.' } });
+        set({
+          auth: { phase: 'error', message: 'OAuth state не совпадает. Возможна CSRF-атака.' },
+        });
         return true;
       }
 
@@ -529,23 +643,10 @@ export const useAppStore = create<AppState>((set, get) => {
       try {
         const token = await exchangeCode(params.code, pkce.codeVerifier);
         if (get().sessionGeneration !== gen) return true;
-        const api = new GitHubApi(token);
-        const user = await api.getCurrentUser();
-        if (get().sessionGeneration !== gen) return true;
         session.setToken(token);
-        const accountId = String(user.id);
-        const userCached = await loadGitHubAccountState(accountId);
-        if (get().sessionGeneration !== gen) return true;
-
-        set({ api, user, auth: { phase: 'success' }, error: null, ...userCached });
-        setTimeout(() => set({ auth: { phase: 'idle' } }), 1500);
-
-        const legacyClaim = await checkLegacyData();
-        set({ legacyClaim });
-
-        await get().refreshRepositories();
-        await outboxProcessor.process();
-        await get().refreshIssues();
+        // Единственная ответственность callback: безопасно обменять и сохранить token.
+        // initialize() ниже выполнит ровно одно восстановление пользователя и синхронизацию.
+        set({ auth: { phase: 'success' }, error: null });
       } catch (error) {
         if (get().sessionGeneration !== gen) return true;
         session.clear();
@@ -569,14 +670,8 @@ export const useAppStore = create<AppState>((set, get) => {
       session.clear();
       outboxProcessor.destroy();
       const gen = get().sessionGeneration + 1;
-      const defaultTab: WorkspaceTab = {
-        id: crypto.randomUUID(),
-        entity: { kind: 'all' },
-        title: 'Все задачи',
-        position: 0,
-        active: true,
-        accountId: null,
-      };
+      const localDefaultTab = defaultTab(null);
+      void persistTabs([localDefaultTab], null);
       set({
         api: null,
         user: null,
@@ -586,10 +681,10 @@ export const useAppStore = create<AppState>((set, get) => {
         pendingIssues: [],
         repositories: [],
         notes: get().notes.filter((n) => n.accountId === null),
-        tabs: [defaultTab],
+        tabs: [localDefaultTab],
         outbox: [],
         sessionGeneration: gen,
-        legacyClaim: { hasLegacyData: false, counts: { repositories: 0, issues: 0, notes: 0, outbox: 0, tabs: 0 } },
+        legacyClaim: emptyLegacyClaim(),
       });
     },
 
@@ -638,11 +733,13 @@ export const useAppStore = create<AppState>((set, get) => {
 
       /** Ошибки по отдельным репозиториям. */
       const repoErrors: string[] = [];
+      let globalRateLimitUntil: string | null = null;
 
       for (const repository of repositories) {
         // Проверяем сессию перед каждым репозиторием
         if (get().sessionGeneration !== gen) return;
 
+        const refreshToken = beginRepositoryRefresh(accountId, repository.fullName);
         try {
           const [networkIssues, labels] = await Promise.all([
             api.getIssues(repository.fullName),
@@ -680,10 +777,20 @@ export const useAppStore = create<AppState>((set, get) => {
                 PENDING_STATES.has(i.syncState),
               );
               const localIssueMap = new Map(localIssuesInRepo.map((i) => [issueKey(i), i]));
+              const networkKeys = new Set(networkIssuesWithAccount.map((i) => issueKey(i)));
+              const latestRequest = isLatestRepositoryRefresh(refreshToken);
 
-              // Удалить только не-pending записи
+              // Удаляем только записи, которых нет в актуальном снимке и которые не
+              // менялись локально после старта GET. Старый параллельный GET не удаляет данные.
               for (const item of localIssuesInRepo) {
-                if (!PENDING_STATES.has(item.syncState)) {
+                const key = issueKey(item);
+                const protectedByMutation = wasMutatedAfter(refreshToken, key);
+                if (
+                  latestRequest &&
+                  !networkKeys.has(key) &&
+                  !PENDING_STATES.has(item.syncState) &&
+                  !protectedByMutation
+                ) {
                   await db.githubIssuesCache.delete([
                     accountId,
                     repository.fullName,
@@ -699,8 +806,12 @@ export const useAppStore = create<AppState>((set, get) => {
                 const activeOp = pendingOutbox.find(
                   (op) => op.entityKey === key && op.type === 'update_issue',
                 );
+                const changedAfterRequest = wasMutatedAfter(refreshToken, key);
 
-                if (local && activeOp) {
+                if (local && changedAfterRequest) {
+                  // Сохраняем подтверждённую или optimistic локальную мутацию целиком.
+                  await db.githubIssuesCache.put(local);
+                } else if (local && activeOp) {
                   const hasConflict =
                     local.title !== netIssue.title || local.body !== netIssue.body;
 
@@ -715,7 +826,7 @@ export const useAppStore = create<AppState>((set, get) => {
                     syncState: hasConflict ? 'conflict' : 'pending',
                     accountId,
                   });
-                } else {
+                } else if (latestRequest || !local) {
                   await db.githubIssuesCache.put({ ...netIssue, accountId });
                 }
               }
@@ -732,35 +843,39 @@ export const useAppStore = create<AppState>((set, get) => {
                 }
               }
 
-              await db.repositoryLabelsCache.put({
-                repositoryFullName: repository.fullName,
-                labels,
-                cachedAt: new Date().toISOString(),
-                accountId,
-              });
+              if (latestRequest) {
+                await db.repositoryLabelsCache.put({
+                  repositoryFullName: repository.fullName,
+                  labels,
+                  cachedAt: new Date().toISOString(),
+                  accountId,
+                });
+              }
             },
           );
         } catch (error: unknown) {
           if (get().sessionGeneration !== gen) return;
-          const status = (error as { status?: number }).status;
+          const parsed = parseGitHubError(error);
 
-
-          // 401 — глобальная ошибка: немедленно выходим
-          if (status === 401) {
+          if (parsed.kind === 'unauthorized') {
             get().logout();
             set({ error: 'Сессия GitHub истекла. Войдите снова; данные сохранены.' });
             return;
           }
 
+          if (parsed.kind === 'rate-limit') {
+            globalRateLimitUntil = parsed.retryAt || new Date(Date.now() + 60_000).toISOString();
+            set({ rateLimitUntil: globalRateLimitUntil });
+            break;
+          }
+
           // Локальная ошибка репозитория: логируем и продолжаем
           const msg =
-            status === 403
+            parsed.kind === 'permission-denied'
               ? `${repository.fullName}: нет доступа (403)`
-              : status === 404
+              : parsed.kind === 'not-found'
                 ? `${repository.fullName}: репозиторий не найден (404)`
-                : status === 429
-                  ? `${repository.fullName}: превышен лимит API (429)`
-                  : `${repository.fullName}: ошибка обновления`;
+                : `${repository.fullName}: ошибка обновления`;
           repoErrors.push(msg);
         }
       }
@@ -769,12 +884,18 @@ export const useAppStore = create<AppState>((set, get) => {
       const cached = await loadGitHubAccountState(accountId);
       if (get().sessionGeneration !== gen) return;
 
-      const errorMsg =
-        repoErrors.length > 0
+      const errorMsg = globalRateLimitUntil
+        ? `Достигнут глобальный лимит GitHub API. Следующая попытка после ${new Date(globalRateLimitUntil).toLocaleTimeString()}.`
+        : repoErrors.length > 0
           ? `Ошибки при обновлении: ${repoErrors.join('; ')}`
           : null;
 
-      set({ issues: cached.issues, pendingIssues: cached.pendingIssues, stale: repoErrors.length > 0, error: errorMsg });
+      set({
+        issues: cached.issues,
+        pendingIssues: cached.pendingIssues,
+        stale: repoErrors.length > 0 || Boolean(globalRateLimitUntil),
+        error: errorMsg,
+      });
     },
 
     toggleRepository: async (fullName) => {
@@ -986,6 +1107,7 @@ export const useAppStore = create<AppState>((set, get) => {
           await db.outbox.add(op);
         }
       });
+      markRepositoryMutation(accountId, issue.repositoryFullName, key);
 
       const cached = await loadGitHubAccountState(accountId);
       set(cached);
@@ -1043,6 +1165,7 @@ export const useAppStore = create<AppState>((set, get) => {
           accountId,
         });
       });
+      markRepositoryMutation(accountId, issue.repositoryFullName, key);
 
       const cached = await loadGitHubAccountState(accountId);
       set(cached);
@@ -1158,33 +1281,38 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     openEntity: async (entity, options) => {
+      const user = get().user;
+      const accountId = user ? String(user.id) : null;
+      let currentTabs = ensureDefaultTab(get().tabs, accountId);
+      if (currentTabs !== get().tabs || get().tabs.length === 0) {
+        currentTabs = await persistTabs(currentTabs, accountId);
+        set({ tabs: currentTabs });
+      }
       const existing = !options?.duplicate
-        ? get().tabs.find((tab) => entitySignature(tab.entity) === entitySignature(entity))
+        ? currentTabs.find((tab) => tabEntitySignature(tab.entity) === tabEntitySignature(entity))
         : undefined;
       if (existing) return get().selectTab(existing.id);
 
-      const user = get().user;
-      const accountId = user ? String(user.id) : null;
       if (!options?.newTab) {
-        const tabs = get().tabs.map((tab) =>
-          tab.active ? { ...tab, entity, title: titleForEntity(entity) } : tab,
+        const tabs = currentTabs.map((tab) =>
+          tab.active ? { ...tab, entity, title: titleForTabEntity(entity) } : tab,
         );
-        await persistTabs(tabs, accountId);
-        set({ tabs, selectedTask: null });
+        const persisted = await persistTabs(tabs, accountId);
+        set({ tabs: persisted, selectedTask: null });
         return;
       }
-      const tabs = get().tabs.map((tab) => ({ ...tab, active: false }));
+      const tabs = currentTabs.map((tab) => ({ ...tab, active: false }));
       const tab: WorkspaceTab = {
         id: crypto.randomUUID(),
         entity,
-        title: titleForEntity(entity),
+        title: titleForTabEntity(entity),
         position: tabs.length,
         active: true,
         accountId,
       };
       const next = [...tabs, tab];
-      await persistTabs(next, accountId);
-      set({ tabs: next, selectedTask: null });
+      const persisted = await persistTabs(next, accountId);
+      set({ tabs: persisted, selectedTask: null });
     },
 
     closeTab: async (id) => {
@@ -1201,8 +1329,8 @@ export const useAppStore = create<AppState>((set, get) => {
             accountId,
           },
         ];
-        await persistTabs(reset, accountId);
-        set({ tabs: reset });
+        const persisted = await persistTabs(reset, accountId);
+        set({ tabs: persisted });
         return;
       }
       const closing = current.find((tab) => tab.id === id);
@@ -1214,16 +1342,16 @@ export const useAppStore = create<AppState>((set, get) => {
           ...tab,
           active: index === Math.max(0, next.length - 1),
         }));
-      await persistTabs(next, accountId);
-      set({ tabs: next });
+      const persisted = await persistTabs(next, accountId);
+      set({ tabs: persisted });
     },
 
     selectTab: async (id) => {
       const user = get().user;
       const accountId = user ? String(user.id) : null;
       const tabs = get().tabs.map((tab) => ({ ...tab, active: tab.id === id }));
-      await persistTabs(tabs, accountId);
-      set({ tabs, selectedTask: null });
+      const persisted = await persistTabs(tabs, accountId);
+      set({ tabs: persisted, selectedTask: null });
     },
 
     setSelectedTask: (selectedTask) => set({ selectedTask }),
@@ -1244,7 +1372,105 @@ export const useAppStore = create<AppState>((set, get) => {
           repositoryFullName: noteId ? get().conversionDialog.repositoryFullName : undefined,
         },
       }),
-    retryOperation: async (id) => outboxProcessor.retry(id),
+    retryOperation: async (id) => {
+      try {
+        await outboxProcessor.retry(id);
+      } catch (error) {
+        set({ error: error instanceof Error ? error.message : 'Не удалось повторить операцию.' });
+      }
+    },
+    retryAmbiguousOperation: async (id) => {
+      await outboxProcessor.retry(id, true);
+    },
+    updatePendingOperation: async (clientLocalId, changes) => {
+      const pending = await db.pendingIssues.get(clientLocalId);
+      const operation = await db.outbox
+        .where('entityKey')
+        .equals(clientLocalId)
+        .and((item) => item.accountId === pending?.accountId)
+        .first();
+      if (!pending || !operation) return;
+      if (operation.state === 'syncing') {
+        set({ error: 'Нельзя изменить операцию во время отправки.' });
+        return;
+      }
+      const repositoryFullName = changes.repositoryFullName || pending.repositoryFullName;
+      const updatedPending: PendingIssue = {
+        ...pending,
+        repositoryFullName,
+        title: changes.title?.trim() || pending.title,
+        body: changes.body ?? pending.body,
+        labels: changes.labels
+          ? changes.labels.map((name) => {
+              const existing = pending.labels.find((label) => label.name === name);
+              return existing || { name, color: '8c959f' };
+            })
+          : pending.labels,
+        assignees: changes.assignees ?? pending.assignees,
+        updatedAt: new Date().toISOString(),
+        needsAttention: false,
+        migrationDiagnostic: undefined,
+      };
+      const updatedOperation: OutboxOperation = {
+        ...operation,
+        repositoryFullName,
+        payload: {
+          ...operation.payload,
+          title: updatedPending.title,
+          body: updatedPending.body,
+          labels: updatedPending.labels.map((label) => label.name),
+          assignees: updatedPending.assignees,
+          clientLocalId,
+        },
+        state: 'pending',
+        requestStarted: false,
+        attemptCount: 0,
+        nextAttemptAt: undefined,
+        lastError: undefined,
+        updatedAt: new Date().toISOString(),
+      };
+      await db.transaction('rw', db.pendingIssues, db.outbox, async () => {
+        await db.pendingIssues.put(updatedPending);
+        await db.outbox.put(updatedOperation);
+      });
+      const cached = await loadGitHubAccountState(pending.accountId);
+      set({ ...cached, error: null });
+      if (!updatedOperation.ambiguityRisk) await outboxProcessor.process();
+    },
+    cancelPendingOperation: async (clientLocalId) => {
+      const pending = await db.pendingIssues.get(clientLocalId);
+      if (!pending) return;
+      let normalizedTabs: WorkspaceTab[] = [];
+      await db.transaction('rw', db.pendingIssues, db.outbox, db.tabs, async () => {
+        const operations = await db.outbox
+          .where('entityKey')
+          .equals(clientLocalId)
+          .and((operation) => operation.accountId === pending.accountId)
+          .toArray();
+        await db.outbox.bulkDelete(operations.map((operation) => operation.id));
+        await db.pendingIssues.delete(clientLocalId);
+        const accountTabs = await db.tabs.where('accountId').equals(pending.accountId).toArray();
+        normalizedTabs = ensureDefaultTab(
+          accountTabs.filter(
+            (tab) =>
+              tab.entity.kind !== 'pending-issue' || tab.entity.clientLocalId !== clientLocalId,
+          ),
+          pending.accountId,
+        );
+        await db.tabs.where('accountId').equals(pending.accountId).delete();
+        await db.tabs.bulkPut(normalizedTabs);
+      });
+      const cached = await loadGitHubAccountState(pending.accountId);
+      const selectedTask = get().selectedTask;
+      set({
+        ...cached,
+        tabs: normalizedTabs,
+        selectedTask:
+          selectedTask?.kind === 'pending-issue' && selectedTask.clientLocalId === clientLocalId
+            ? null
+            : selectedTask,
+      });
+    },
 
     getRepositoryLabels: async (repositoryFullName) => {
       const api = get().api;
@@ -1300,80 +1526,187 @@ export const useAppStore = create<AppState>((set, get) => {
       const user = get().user;
       if (!user) return;
       const accountId = assertAccountId(String(user.id));
+      try {
+        await db.transaction('rw', db.tables, async () => {
+          const pendingIdMap = new Map<string, string>();
+          const noteIdMap = new Map<string, string>();
 
-      await db.transaction(
-        'rw',
-        [
-          db.repositoriesCache,
-          db.githubIssuesCache,
-          db.repositoryLabelsCache,
-          db.repositoryAssigneesCache,
-          db.outbox,
-          db.tabs,
-          db.localNotes,
-        ],
-        async () => {
-          // Репозитории: старый ключ [legacy-unassigned+fullName] → [accountId+fullName]
           const legacyRepos = await db.repositoriesCache
-            .where('accountId').equals('legacy-unassigned').toArray();
-          for (const repo of legacyRepos) {
-            await db.repositoriesCache.delete(['legacy-unassigned', repo.fullName]);
-            await db.repositoriesCache.put({ ...repo, accountId });
+            .where('accountId')
+            .equals('legacy-unassigned')
+            .toArray();
+          for (const legacy of legacyRepos) {
+            const current = await db.repositoriesCache.get([accountId, legacy.fullName]);
+            await db.repositoriesCache.delete(['legacy-unassigned', legacy.fullName]);
+            await db.repositoriesCache.put({
+              ...(current || legacy),
+              pinned: Boolean(current?.pinned || legacy.pinned),
+              updatedAt:
+                current && current.updatedAt > legacy.updatedAt
+                  ? current.updatedAt
+                  : legacy.updatedAt,
+              accountId,
+            });
           }
 
-          // Issues
           const legacyIssues = await db.githubIssuesCache
-            .where('accountId').equals('legacy-unassigned').toArray();
-          for (const issue of legacyIssues) {
-            await db.githubIssuesCache.delete(['legacy-unassigned', issue.repositoryFullName, issue.issueNumber]);
-            await db.githubIssuesCache.put({ ...issue, accountId });
+            .where('accountId')
+            .equals('legacy-unassigned')
+            .toArray();
+          for (const legacy of legacyIssues) {
+            const key: [string, string, number] = [
+              accountId,
+              legacy.repositoryFullName,
+              legacy.issueNumber,
+            ];
+            const current = await db.githubIssuesCache.get(key);
+            const preferLegacy =
+              !current ||
+              PENDING_STATES.has(legacy.syncState) ||
+              legacy.updatedAt > current.updatedAt;
+            await db.githubIssuesCache.delete([
+              'legacy-unassigned',
+              legacy.repositoryFullName,
+              legacy.issueNumber,
+            ]);
+            if (preferLegacy) await db.githubIssuesCache.put({ ...legacy, accountId });
           }
 
-          // Labels cache
+          const legacyPending = await db.pendingIssues
+            .where('accountId')
+            .equals('legacy-unassigned')
+            .toArray();
+          for (const legacy of legacyPending) {
+            const collision = await db.pendingIssues.get(legacy.clientLocalId);
+            const nextId =
+              collision && collision.accountId !== 'legacy-unassigned'
+                ? crypto.randomUUID()
+                : legacy.clientLocalId;
+            pendingIdMap.set(legacy.clientLocalId, nextId);
+            await db.pendingIssues.delete(legacy.clientLocalId);
+            await db.pendingIssues.put({ ...legacy, clientLocalId: nextId, accountId });
+          }
+
+          const legacyNotes = await db.localNotes
+            .filter((note) => note.accountId === 'legacy-unassigned')
+            .toArray();
+          for (const legacy of legacyNotes) {
+            const collision = await db.localNotes.get(legacy.id);
+            const nextId =
+              collision && collision.accountId !== 'legacy-unassigned'
+                ? crypto.randomUUID()
+                : legacy.id;
+            noteIdMap.set(legacy.id, nextId);
+            if (nextId !== legacy.id) await db.localNotes.delete(legacy.id);
+            await db.localNotes.put({ ...legacy, id: nextId, accountId });
+          }
+
           const legacyLabels = await db.repositoryLabelsCache
-            .where('accountId').equals('legacy-unassigned').toArray();
-          for (const label of legacyLabels) {
-            await db.repositoryLabelsCache.delete(['legacy-unassigned', label.repositoryFullName]);
-            await db.repositoryLabelsCache.put({ ...label, accountId });
+            .where('accountId')
+            .equals('legacy-unassigned')
+            .toArray();
+          for (const legacy of legacyLabels) {
+            const current = await db.repositoryLabelsCache.get([
+              accountId,
+              legacy.repositoryFullName,
+            ]);
+            await db.repositoryLabelsCache.delete(['legacy-unassigned', legacy.repositoryFullName]);
+            if (!current || legacy.cachedAt > current.cachedAt) {
+              await db.repositoryLabelsCache.put({ ...legacy, accountId });
+            }
           }
-
-          // Assignees cache
           const legacyAssignees = await db.repositoryAssigneesCache
-            .where('accountId').equals('legacy-unassigned').toArray();
-          for (const entry of legacyAssignees) {
-            await db.repositoryAssigneesCache.delete(['legacy-unassigned', entry.repositoryFullName]);
-            await db.repositoryAssigneesCache.put({ ...entry, accountId });
+            .where('accountId')
+            .equals('legacy-unassigned')
+            .toArray();
+          for (const legacy of legacyAssignees) {
+            const current = await db.repositoryAssigneesCache.get([
+              accountId,
+              legacy.repositoryFullName,
+            ]);
+            await db.repositoryAssigneesCache.delete([
+              'legacy-unassigned',
+              legacy.repositoryFullName,
+            ]);
+            if (!current || legacy.cachedAt > current.cachedAt) {
+              await db.repositoryAssigneesCache.put({ ...legacy, accountId });
+            }
           }
 
-          // Outbox
-          await db.outbox
-            .where('accountId').equals('legacy-unassigned')
-            .modify({ accountId });
+          const legacyOperations = await db.outbox
+            .where('accountId')
+            .equals('legacy-unassigned')
+            .toArray();
+          for (const operation of legacyOperations) {
+            const idCollision = await db.outbox.get(operation.id);
+            const mappedEntityKey =
+              pendingIdMap.get(operation.entityKey) ||
+              noteIdMap.get(operation.entityKey) ||
+              operation.entityKey;
+            const sourceNoteId = operation.sourceNoteId
+              ? noteIdMap.get(operation.sourceNoteId) || operation.sourceNoteId
+              : undefined;
+            await db.outbox.delete(operation.id);
+            await db.outbox.put({
+              ...operation,
+              id:
+                idCollision && idCollision.accountId !== 'legacy-unassigned'
+                  ? crypto.randomUUID()
+                  : operation.id,
+              entityKey: mappedEntityKey,
+              sourceNoteId,
+              payload: {
+                ...operation.payload,
+                ...(pendingIdMap.has(operation.entityKey)
+                  ? { clientLocalId: mappedEntityKey }
+                  : {}),
+              },
+              accountId,
+            });
+          }
 
-          // Tabs
-          await db.tabs
-            .where('accountId').equals('legacy-unassigned')
-            .modify({ accountId });
+          const currentTabs = await db.tabs.where('accountId').equals(accountId).toArray();
+          const legacyTabs = await db.tabs.where('accountId').equals('legacy-unassigned').toArray();
+          const existingIds = new Set(currentTabs.map((tab) => tab.id));
+          const mappedLegacyTabs = legacyTabs.map((tab) => {
+            let entity = tab.entity;
+            if (entity.kind === 'pending-issue' && pendingIdMap.has(entity.clientLocalId)) {
+              entity = { ...entity, clientLocalId: pendingIdMap.get(entity.clientLocalId)! };
+            } else if (entity.kind === 'local-note' && noteIdMap.has(entity.id)) {
+              entity = { ...entity, id: noteIdMap.get(entity.id)! };
+            }
+            const id = existingIds.has(tab.id) ? crypto.randomUUID() : tab.id;
+            existingIds.add(id);
+            return { ...tab, id, entity, accountId };
+          });
+          await db.tabs.where('accountId').equals('legacy-unassigned').delete();
+          await db.tabs.where('accountId').equals(accountId).delete();
+          await db.tabs.bulkPut(ensureDefaultTab([...currentTabs, ...mappedLegacyTabs], accountId));
 
-          // Notes
-          await db.localNotes
-            .filter((n) => n.accountId === 'legacy-unassigned')
+          await db.syncMetadata
+            .where('accountId')
+            .equals('legacy-unassigned')
             .modify({ accountId });
-        },
-      );
+        });
 
-      // Перезагружаем состояние
-      const userCached = await loadGitHubAccountState(accountId);
-      set({
-        ...userCached,
-        legacyClaim: { hasLegacyData: false, counts: { repositories: 0, issues: 0, notes: 0, outbox: 0, tabs: 0 } },
-      });
+        const userCached = await loadGitHubAccountState(accountId);
+        set({ ...userCached, legacyClaim: emptyLegacyClaim(), error: null });
+        await outboxProcessor.process();
+        await get().refreshIssues();
+      } catch {
+        set({
+          error:
+            'Не удалось привязать legacy-данные. Транзакция отменена, исходные данные сохранены.',
+        });
+      }
     },
 
     dismissLegacyClaim: () => {
-      set({
-        legacyClaim: { hasLegacyData: false, counts: { repositories: 0, issues: 0, notes: 0, outbox: 0, tabs: 0 } },
-      });
+      const user = get().user;
+      if (user) {
+        void db.settings.put({ key: `legacy-claim:${user.id}`, value: 'never' });
+      }
+      set({ legacyClaim: emptyLegacyClaim() });
     },
   };
 });

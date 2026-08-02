@@ -19,5 +19,5 @@
     "exactOptionalPropertyTypes": true,
     "types": ["vite/client", "vite-plugin-pwa/client"]
   },
-  "include": ["src", "tests"]
+  "include": ["src", "tests", "oauth-worker/src"]
 }

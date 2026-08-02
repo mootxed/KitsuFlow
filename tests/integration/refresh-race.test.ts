@@ -53,7 +53,11 @@ describe('Outbox and Refresh Issues Controlled Race Barriers', () => {
       createIssue: async () => {
         createCalled = true;
         await barrier.promise;
-        return normalizeIssue('acme/repo', apiIssue({ number: 2, title: 'New Created Issue' }), '1001');
+        return normalizeIssue(
+          'acme/repo',
+          apiIssue({ number: 2, title: 'New Created Issue' }),
+          '1001',
+        );
       },
     };
 
@@ -180,5 +184,105 @@ describe('Outbox and Refresh Issues Controlled Race Barriers', () => {
     expect(useAppStore.getState().issues.find((i) => i.issueNumber === 5)?.title).toBe(
       'Updated Title',
     );
+  });
+
+  it('old GET finishing after a successful create cannot delete the new Issue', async () => {
+    const barrier = createBarrier();
+    let getStarted = false;
+    const repo = {
+      id: 1,
+      installationId: 1,
+      fullName: 'acme/repo',
+      owner: 'acme',
+      name: 'repo',
+      private: false,
+      permissions: { pull: true, push: true },
+      pinned: true,
+      updatedAt: new Date().toISOString(),
+      accountId: '1001',
+    };
+    const api = {
+      getIssues: async () => {
+        getStarted = true;
+        await barrier.promise;
+        return [
+          normalizeIssue('acme/repo', apiIssue({ number: 1, title: 'Old snapshot' }), '1001'),
+        ];
+      },
+      getLabels: async () => [],
+      createIssue: async () =>
+        normalizeIssue('acme/repo', apiIssue({ number: 2, title: 'Created after GET' }), '1001'),
+    };
+    useAppStore.setState({
+      user: { id: 1001, login: 'acme', name: 'ACME', avatarUrl: '' },
+      api: api as never,
+      repositories: [repo],
+      issues: [],
+    });
+    const refresh = useAppStore.getState().refreshIssues('acme/repo');
+    while (!getStarted) await new Promise((resolve) => setTimeout(resolve, 5));
+    await useAppStore.getState().createTask({
+      title: 'Created after GET',
+      description: '',
+      status: 'todo',
+      repositoryFullName: 'acme/repo',
+      tags: [],
+      checklist: [],
+      priority: 'none',
+      assignees: [],
+    });
+    barrier.resolve();
+    await refresh;
+    expect(useAppStore.getState().issues.some((issue) => issue.issueNumber === 2)).toBe(true);
+    expect(await db.githubIssuesCache.get(['1001', 'acme/repo', 2])).toBeDefined();
+  });
+
+  it('old GET finishing after a successful update cannot roll back fields', async () => {
+    const barrier = createBarrier();
+    let getStarted = false;
+    const repo = {
+      id: 1,
+      installationId: 1,
+      fullName: 'acme/repo',
+      owner: 'acme',
+      name: 'repo',
+      private: false,
+      permissions: { pull: true, push: true },
+      pinned: true,
+      updatedAt: new Date().toISOString(),
+      accountId: '1001',
+    };
+    const original = normalizeIssue(
+      'acme/repo',
+      apiIssue({ number: 5, title: 'Original title', body: 'Original body' }),
+      '1001',
+    );
+    await db.githubIssuesCache.put(original);
+    const api = {
+      getIssues: async () => {
+        getStarted = true;
+        await barrier.promise;
+        return [original];
+      },
+      getLabels: async () => [],
+      updateIssue: async () => ({ ...original, title: 'New title', body: 'New body' }),
+    };
+    useAppStore.setState({
+      user: { id: 1001, login: 'acme', name: 'ACME', avatarUrl: '' },
+      api: api as never,
+      repositories: [repo],
+      issues: [original],
+    });
+    const refresh = useAppStore.getState().refreshIssues('acme/repo');
+    while (!getStarted) await new Promise((resolve) => setTimeout(resolve, 5));
+    await useAppStore
+      .getState()
+      .updateIssueFields(original, { title: 'New title', body: 'New body' });
+    barrier.resolve();
+    await refresh;
+    expect(useAppStore.getState().issues.find((issue) => issue.issueNumber === 5)).toMatchObject({
+      title: 'New title',
+      body: 'New body',
+    });
   });
 });

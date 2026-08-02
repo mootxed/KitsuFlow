@@ -56,7 +56,13 @@ describe('PendingIssues table — no collision, full lifecycle', () => {
       type: 'create_issue',
       entityKey: clientLocalId,
       repositoryFullName: 'acme/repo',
-      payload: { title: 'Pending Issue client-lifecycle-1', body: '', labels: [], assignees: [], clientLocalId },
+      payload: {
+        title: 'Pending Issue client-lifecycle-1',
+        body: '',
+        labels: [],
+        assignees: [],
+        clientLocalId,
+      },
       accountId: '1001',
     });
 
@@ -92,7 +98,13 @@ describe('PendingIssues table — no collision, full lifecycle', () => {
       type: 'create_issue',
       entityKey: clientLocalId,
       repositoryFullName: 'acme/repo',
-      payload: { title: 'Pending Issue client-survive', body: '', labels: [], assignees: [], clientLocalId },
+      payload: {
+        title: 'Pending Issue client-survive',
+        body: '',
+        labels: [],
+        assignees: [],
+        clientLocalId,
+      },
       accountId: '1001',
     });
 

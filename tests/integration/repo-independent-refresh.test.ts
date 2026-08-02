@@ -55,7 +55,9 @@ describe('Independent Per-Repository Refresh Error Isolation', () => {
           const err = Object.assign(new Error('Not Found'), { status: 404 });
           throw err;
         }
-        return [normalizeIssue('org/repo2', apiIssue({ number: 42, title: 'Repo 2 Issue' }), '1001')];
+        return [
+          normalizeIssue('org/repo2', apiIssue({ number: 42, title: 'Repo 2 Issue' }), '1001'),
+        ];
       },
       getLabels: async () => [],
     };
@@ -72,10 +74,56 @@ describe('Independent Per-Repository Refresh Error Isolation', () => {
     const state = useAppStore.getState();
 
     // Repo 2 issues SHOULD be loaded into store despite Repo 1 failing
-    expect(state.issues.some((i) => i.repositoryFullName === 'org/repo2' && i.issueNumber === 42)).toBe(true);
+    expect(
+      state.issues.some((i) => i.repositoryFullName === 'org/repo2' && i.issueNumber === 42),
+    ).toBe(true);
 
     // Error state should contain reference to repo1 failure
     expect(state.error).toContain('org/repo1');
     expect(state.stale).toBe(true);
+  });
+
+  it('stops remaining repositories on a global rate limit', async () => {
+    const calls: string[] = [];
+    const repositories = ['org/limited', 'org/not-called'].map((fullName, index) => ({
+      id: index + 1,
+      installationId: 1,
+      fullName,
+      owner: 'org',
+      name: fullName.split('/')[1]!,
+      private: false,
+      permissions: { pull: true, push: true },
+      pinned: true,
+      updatedAt: new Date().toISOString(),
+      accountId: '1001',
+    }));
+    const api = {
+      getIssues: async (repositoryFullName: string) => {
+        calls.push(repositoryFullName);
+        throw Object.assign(new Error('API rate limit exceeded'), {
+          status: 403,
+          response: {
+            headers: {
+              'x-ratelimit-remaining': '0',
+              'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 120),
+            },
+            data: { message: 'API rate limit exceeded' },
+          },
+        });
+      },
+      getLabels: async () => [],
+    };
+    useAppStore.setState({
+      user: { id: 1001, login: 'fox', name: 'Fox', avatarUrl: '' },
+      api: api as never,
+      repositories,
+    });
+
+    await useAppStore.getState().refreshIssues();
+
+    expect(calls).toEqual(['org/limited']);
+    expect(useAppStore.getState().rateLimitUntil).not.toBeNull();
+    expect(useAppStore.getState().error).toContain('глобальный лимит');
+    expect(useAppStore.getState().error).not.toContain('org/not-called');
   });
 });

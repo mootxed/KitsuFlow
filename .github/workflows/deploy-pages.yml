@@ -36,6 +36,7 @@ jobs:
           VITE_GITHUB_CLIENT_ID: ${{ vars.VITE_GITHUB_CLIENT_ID }}
           VITE_GITHUB_APP_SLUG: ${{ vars.VITE_GITHUB_APP_SLUG }}
           VITE_GITHUB_APP_INSTALL_URL: ${{ vars.VITE_GITHUB_APP_INSTALL_URL }}
+          VITE_OAUTH_PROXY_URL: ${{ vars.VITE_OAUTH_PROXY_URL }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

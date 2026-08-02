@@ -1,6 +1,6 @@
 import { AlertCircle, CloudOff, Inbox, RefreshCw } from 'lucide-react';
 import { useAppStore } from '../state/app-store';
-import { OUTBOX_STATE_LABELS } from '../domain/types';
+import { OUTBOX_STATE_LABELS, OUTBOX_TYPE_LABELS } from '../domain/types';
 import { AllTasks } from './AllTasks';
 import { PendingIssueContent } from './PendingIssueDocument';
 import { RepositoryBoard } from './RepositoryBoard';
@@ -69,7 +69,8 @@ export function Workspace() {
             return (
               <div key={operation.id} className={`outbox-op state-${operation.state}`}>
                 <span>
-                  <strong>{operation.repositoryFullName}</strong> ({operation.type})
+                  <strong>{operation.repositoryFullName}</strong> (
+                  {OUTBOX_TYPE_LABELS[operation.type]})
                   <small>{operation.lastError || 'Синхронизация не завершена'}</small>
                   {operation.attemptCount > 0 && (
                     <small> • Попыток: {operation.attemptCount}</small>
@@ -82,11 +83,12 @@ export function Workspace() {
                     </small>
                   )}
                 </span>
-                {(!isFutureAutoRetry || operation.state === 'exhausted') && (
-                  <button onClick={() => void retryOperation(operation.id)}>
-                    {operation.state === 'exhausted' ? 'Повторить вручную' : 'Повторить'}
-                  </button>
-                )}
+                {!operation.ambiguityRisk &&
+                  (!isFutureAutoRetry || operation.state === 'exhausted') && (
+                    <button onClick={() => void retryOperation(operation.id)}>
+                      {operation.state === 'exhausted' ? 'Повторить вручную' : 'Повторить'}
+                    </button>
+                  )}
               </div>
             );
           })}

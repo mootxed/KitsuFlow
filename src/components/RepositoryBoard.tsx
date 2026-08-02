@@ -64,6 +64,11 @@ export function RepositoryBoard({ repositoryFullName }: { repositoryFullName: st
       state.issues.filter((issue) => issue.repositoryFullName === repositoryFullName),
     ),
   );
+  const pendingIssues = useAppStore(
+    useShallow((state) =>
+      state.pendingIssues.filter((issue) => issue.repositoryFullName === repositoryFullName),
+    ),
+  );
   const notes = useAppStore(
     useShallow((state) =>
       state.notes.filter(
@@ -106,7 +111,11 @@ export function RepositoryBoard({ repositoryFullName }: { repositoryFullName: st
       </header>
       {SECTIONS.map((status) => {
         const sectionIssues = issues.filter((issue) => issue.derivedStatus === status);
-        const count = status === 'question' ? notes.length : sectionIssues.length;
+        const sectionPendingIssues = pendingIssues.filter(
+          (issue) => issue.derivedStatus === status,
+        );
+        const count =
+          status === 'question' ? notes.length : sectionIssues.length + sectionPendingIssues.length;
         const isCollapsed = collapsed.has(status);
         return (
           <section className={`board-section section-${status}`} key={status}>
@@ -134,6 +143,12 @@ export function RepositoryBoard({ repositoryFullName }: { repositoryFullName: st
                       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
                       .map((issue) => (
                         <TaskRow key={issue.issueNumber} item={issue} kind="issue" />
+                      ))}
+                    {sectionPendingIssues
+                      .filter((issue) => issue.derivedPriority === priority)
+                      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+                      .map((issue) => (
+                        <TaskRow key={issue.clientLocalId} item={issue} kind="pending" />
                       ))}
                   </DropColumn>
                 ))}

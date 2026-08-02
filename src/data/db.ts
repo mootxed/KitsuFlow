@@ -9,6 +9,7 @@ import type {
   RepositoryLabelsCache,
   WorkspaceTab,
 } from '../domain/types';
+import { ensureDefaultTab, titleForTabEntity } from '../domain/tabs';
 
 export interface SettingRecord {
   key: string;
@@ -19,6 +20,7 @@ export interface SyncMetadata {
   key: string;
   value: string;
   updatedAt: string;
+  accountId?: string | undefined;
 }
 
 export class KitsuFlowDatabase extends Dexie {
@@ -166,7 +168,9 @@ export class KitsuFlowDatabase extends Dexie {
         const issuesTable = transaction.table('githubIssuesCache');
         const pendingTable = transaction.table('pendingIssues');
         const allIssues = await issuesTable.toArray();
-        const tempIssues = allIssues.filter((i: Record<string, unknown>) => Number(i.issueNumber) < 0);
+        const tempIssues = allIssues.filter(
+          (i: Record<string, unknown>) => Number(i.issueNumber) < 0,
+        );
         for (const tempIssue of tempIssues) {
           const clientLocalId = String(tempIssue.clientLocalId || crypto.randomUUID());
           const pending: Record<string, unknown> = {
@@ -189,6 +193,174 @@ export class KitsuFlowDatabase extends Dexie {
             .where('[accountId+repositoryFullName+issueNumber]')
             .equals([tempIssue.accountId, tempIssue.repositoryFullName, tempIssue.issueNumber])
             .delete();
+        }
+      });
+    this.version(6)
+      .stores({
+        localNotes: 'id, status, repositoryFullName, updatedAt, syncState, accountId',
+        githubIssuesCache:
+          '[accountId+repositoryFullName+issueNumber], accountId, repositoryFullName, derivedStatus, updatedAt, syncState, clientLocalId',
+        pendingIssues: 'clientLocalId, accountId, repositoryFullName, createdAt, needsAttention',
+        repositoriesCache:
+          '[accountId+fullName], accountId, fullName, pinned, installationId, updatedAt',
+        repositoryLabelsCache:
+          '[accountId+repositoryFullName], accountId, repositoryFullName, cachedAt',
+        repositoryAssigneesCache:
+          '[accountId+repositoryFullName], accountId, repositoryFullName, cachedAt',
+        outbox:
+          'id, type, entityKey, state, repositoryFullName, accountId, createdAt, nextAttemptAt, leaseExpiresAt, ambiguityRisk',
+        tabs: 'id, accountId, active, position',
+        settings: 'key',
+        syncMetadata: 'key, accountId, updatedAt',
+      })
+      .upgrade(async (transaction) => {
+        const issuesTable = transaction.table('githubIssuesCache');
+        const pendingTable = transaction.table('pendingIssues');
+        const outboxTable = transaction.table('outbox');
+        const tabsTable = transaction.table('tabs');
+
+        const operations = (await outboxTable.toArray()) as OutboxOperation[];
+        const migrated: Array<{
+          accountId: string;
+          repositoryFullName: string;
+          clientLocalId: string;
+          title: string;
+        }> = [];
+
+        const resolveClientLocalId = (
+          record: Record<string, unknown>,
+        ): { clientLocalId: string; ambiguous: boolean; operation?: OutboxOperation } => {
+          const existing =
+            typeof record.clientLocalId === 'string' && record.clientLocalId
+              ? record.clientLocalId
+              : undefined;
+          const accountId = String(record.accountId || 'legacy-unassigned');
+          const repositoryFullName = String(record.repositoryFullName || '');
+          const title = String(record.title || '');
+          const candidates = operations.filter((operation) => {
+            if (
+              operation.accountId !== accountId ||
+              operation.repositoryFullName !== repositoryFullName
+            )
+              return false;
+            if (operation.type !== 'create_issue' && operation.type !== 'convert_note')
+              return false;
+            if (existing && operation.entityKey === existing) return true;
+            if (operation.payload.clientLocalId === existing && existing) return true;
+            return String(operation.payload.title || '') === title;
+          });
+          const operation = candidates.length === 1 ? candidates[0] : undefined;
+          if (operation) {
+            return {
+              clientLocalId: operation.entityKey,
+              ambiguous: false,
+              operation,
+            };
+          }
+          return {
+            clientLocalId: existing || crypto.randomUUID(),
+            ambiguous: candidates.length > 1,
+          };
+        };
+
+        const writePending = async (record: Record<string, unknown>) => {
+          const resolved = resolveClientLocalId(record);
+          const accountId = String(record.accountId || 'legacy-unassigned');
+          const repositoryFullName = String(record.repositoryFullName || '');
+          const title = String(record.title || 'Временная Issue');
+          const pending: PendingIssue = {
+            clientLocalId: resolved.clientLocalId,
+            repositoryFullName,
+            accountId,
+            title,
+            body: String(record.body || ''),
+            state: record.state === 'closed' ? 'closed' : 'open',
+            derivedStatus:
+              record.derivedStatus === 'in_progress' ||
+              record.derivedStatus === 'done' ||
+              record.derivedStatus === 'postponed'
+                ? record.derivedStatus
+                : 'todo',
+            derivedPriority:
+              record.derivedPriority === 'low' ||
+              record.derivedPriority === 'medium' ||
+              record.derivedPriority === 'high' ||
+              record.derivedPriority === 'urgent'
+                ? record.derivedPriority
+                : 'none',
+            labels: Array.isArray(record.labels) ? record.labels : [],
+            assignees: Array.isArray(record.assignees)
+              ? record.assignees.filter((value): value is string => typeof value === 'string')
+              : [],
+            createdAt: String(record.createdAt || new Date().toISOString()),
+            updatedAt: String(record.updatedAt || record.createdAt || new Date().toISOString()),
+            needsAttention: resolved.ambiguous || undefined,
+            migrationDiagnostic: resolved.ambiguous
+              ? 'Несколько legacy-операций соответствуют временной Issue; требуется ручная проверка.'
+              : undefined,
+          };
+          await pendingTable.put(pending);
+          if (resolved.operation) {
+            await outboxTable.update(resolved.operation.id, {
+              entityKey: resolved.clientLocalId,
+              payload: {
+                ...resolved.operation.payload,
+                clientLocalId: resolved.clientLocalId,
+              },
+            });
+          }
+          migrated.push({
+            accountId,
+            repositoryFullName,
+            clientLocalId: resolved.clientLocalId,
+            title,
+          });
+        };
+
+        const existingPending = (await pendingTable.toArray()) as Array<Record<string, unknown>>;
+        for (const record of existingPending) {
+          const oldId = String(record.clientLocalId || '');
+          const resolved = resolveClientLocalId(record);
+          if (oldId && oldId !== resolved.clientLocalId) await pendingTable.delete(oldId);
+          await writePending(record);
+        }
+
+        const temporaryIssues = (
+          (await issuesTable.toArray()) as Array<Record<string, unknown>>
+        ).filter((issue) => Number(issue.issueNumber) < 0);
+        for (const issue of temporaryIssues) {
+          await writePending(issue);
+          await issuesTable.delete([issue.accountId, issue.repositoryFullName, issue.issueNumber]);
+        }
+
+        const tabs = (await tabsTable.toArray()) as WorkspaceTab[];
+        const convertedTabs = tabs.map((tab) => {
+          if (tab.entity.kind !== 'issue' || tab.entity.issueNumber >= 0) return tab;
+          const repositoryFullName = tab.entity.repositoryFullName;
+          const matches = migrated.filter(
+            (entry) =>
+              entry.accountId === (tab.accountId || 'legacy-unassigned') &&
+              entry.repositoryFullName === repositoryFullName,
+          );
+          if (matches.length !== 1) {
+            return { ...tab, entity: { kind: 'all' } as const, title: 'Все задачи' };
+          }
+          const entity = {
+            kind: 'pending-issue' as const,
+            repositoryFullName: matches[0]!.repositoryFullName,
+            clientLocalId: matches[0]!.clientLocalId,
+          };
+          return { ...tab, entity, title: matches[0]!.title || titleForTabEntity(entity) };
+        });
+
+        const byAccount = new Map<string | null, WorkspaceTab[]>();
+        for (const tab of convertedTabs) {
+          const accountId = tab.accountId ?? null;
+          byAccount.set(accountId, [...(byAccount.get(accountId) || []), tab]);
+        }
+        await tabsTable.clear();
+        for (const [accountId, accountTabs] of byAccount) {
+          await tabsTable.bulkPut(ensureDefaultTab(accountTabs, accountId));
         }
       });
   }

@@ -2,69 +2,17 @@ import { APP_CONFIG } from '../config';
 import { db } from '../data/db';
 import { assertAccountId } from '../domain/github-mapping';
 import { createLocalNote } from '../domain/notes';
-import type { GitHubIssue, OutboxOperation } from '../domain/types';
+import { ensureDefaultTab, titleForTabEntity } from '../domain/tabs';
+import type { ChecklistItem, GitHubIssue, OutboxOperation } from '../domain/types';
 import { GitHubApi } from '../github/api';
+import { parseGitHubError } from '../github/errors';
+import { markRepositoryMutation } from './repository-revisions';
 
 export type SyncEvent =
   | { type: 'changed' }
   | { type: 'unauthorized' }
   | { type: 'rate-limited'; retryAt: string }
   | { type: 'permission-denied'; message: string };
-
-export interface GitHubRequestError {
-  status?: number;
-  response?: {
-    headers?: Record<string, string>;
-    data?: {
-      message?: string;
-    };
-  };
-}
-
-const errorStatus = (error: unknown): number | undefined => {
-  if (typeof error === 'object' && error !== null && 'status' in error) {
-    const s = (error as GitHubRequestError).status;
-    return typeof s === 'number' ? s : undefined;
-  }
-  return undefined;
-};
-
-const errorHeaders = (error: unknown): Record<string, string> => {
-  if (typeof error !== 'object' || error === null) return {};
-  const resp = (error as GitHubRequestError).response;
-  return resp?.headers ?? {};
-};
-
-const errorBody = (error: unknown): string => {
-  if (typeof error !== 'object' || error === null) return '';
-  const resp = (error as GitHubRequestError).response?.data;
-  if (typeof resp?.message === 'string') return resp.message.toLowerCase();
-  return '';
-};
-
-function isRateLimit(status: number | undefined, error: unknown): boolean {
-  if (status === 429) return true;
-  if (status !== 403) return false;
-  const headers = errorHeaders(error);
-  const remaining = headers['x-ratelimit-remaining'];
-  if (remaining === '0') return true;
-  const body = errorBody(error);
-  if (body.includes('rate limit') || body.includes('secondary rate')) return true;
-  return false;
-}
-
-const retryAtFromError = (error: unknown): string => {
-  const headers = errorHeaders(error);
-  const retryAfter = Number(headers['retry-after'] || 0);
-  if (retryAfter > 0) return new Date(Date.now() + retryAfter * 1000).toISOString();
-  const epoch = Number(headers['x-ratelimit-reset'] || 0) * 1000;
-  return new Date(epoch > Date.now() ? epoch : Date.now() + 60_000).toISOString();
-};
-
-function safeMessage(error: unknown): string {
-  if (!(error instanceof Error)) return 'Ошибка синхронизации';
-  return error.message.replace(/ghp_\S+|gho_\S+|Bearer\s+\S+/g, '[REDACTED]');
-}
 
 export interface OutboxProcessorOptions {
   getApi: () => GitHubApi | null;
@@ -178,9 +126,14 @@ export class OutboxProcessor {
     return operation;
   }
 
-  async retry(id: string): Promise<void> {
+  async retry(id: string, confirmAmbiguous = false): Promise<void> {
     const existing = await db.outbox.get(id);
     if (!existing) return;
+    if (existing.ambiguityRisk && !confirmAmbiguous) {
+      throw new Error(
+        'Issue мог уже создаться. Сначала проверьте репозиторий и подтвердите повторный POST.',
+      );
+    }
 
     await db.outbox.update(id, {
       state: 'pending',
@@ -191,6 +144,7 @@ export class OutboxProcessor {
       claimedAt: undefined,
       leaseOwner: undefined,
       leaseExpiresAt: undefined,
+      ambiguityRisk: false,
       updatedAt: new Date().toISOString(),
     });
     this.onEvent({ type: 'changed' });
@@ -511,27 +465,57 @@ export class OutboxProcessor {
               .equals(operation.accountId)
               .toArray();
 
-            for (const tab of accountTabs) {
-              if (
-                tab.entity.kind === 'pending-issue' &&
-                tab.entity.clientLocalId === clientLocalId
-              ) {
-                tab.entity = {
-                  kind: 'issue',
-                  repositoryFullName: finalIssue.repositoryFullName,
-                  issueNumber: finalIssue.issueNumber,
-                };
-                tab.title = `${finalIssue.repositoryFullName.split('/')[1]} #${finalIssue.issueNumber}`;
-                await db.tabs.put(tab);
-              }
+            const realEntity = {
+              kind: 'issue' as const,
+              repositoryFullName: finalIssue.repositoryFullName,
+              issueNumber: finalIssue.issueNumber,
+            };
+            const matchesSource = (tab: (typeof accountTabs)[number]) =>
+              (tab.entity.kind === 'pending-issue' &&
+                Boolean(clientLocalId) &&
+                tab.entity.clientLocalId === clientLocalId) ||
+              (tab.entity.kind === 'local-note' &&
+                Boolean(operation.sourceNoteId) &&
+                tab.entity.id === operation.sourceNoteId);
+            const sourceTabs = accountTabs.filter(matchesSource);
+            const existingRealTab = accountTabs.find(
+              (tab) =>
+                tab.entity.kind === 'issue' &&
+                tab.entity.repositoryFullName === finalIssue.repositoryFullName &&
+                tab.entity.issueNumber === finalIssue.issueNumber,
+            );
+            let nextTabs = accountTabs.filter((tab) => !matchesSource(tab));
+            if (existingRealTab) {
+              nextTabs = nextTabs.map((tab) =>
+                tab.id === existingRealTab.id && sourceTabs.some((source) => source.active)
+                  ? { ...tab, active: true }
+                  : tab,
+              );
+            } else if (sourceTabs[0]) {
+              nextTabs.push({
+                ...sourceTabs[0],
+                entity: realEntity,
+                title: titleForTabEntity(realEntity),
+                active: sourceTabs.some((source) => source.active),
+              });
             }
+            const normalizedTabs = ensureDefaultTab(nextTabs, operation.accountId);
+            await db.tabs.where('accountId').equals(operation.accountId).delete();
+            await db.tabs.bulkPut(normalizedTabs);
 
             await db.outbox.delete(operation.id);
           },
         );
 
-        if (this.onIssueCreated && clientLocalId) {
-          await this.onIssueCreated(clientLocalId, finalIssue);
+        markRepositoryMutation(
+          operation.accountId,
+          operation.repositoryFullName,
+          `${finalIssue.repositoryFullName}#${finalIssue.issueNumber}`,
+        );
+
+        const replacedEntityKey = clientLocalId || operation.sourceNoteId || operation.entityKey;
+        if (this.onIssueCreated && replacedEntityKey) {
+          await this.onIssueCreated(replacedEntityKey, finalIssue);
         }
       } else if (operation.type === 'update_issue') {
         const issueNumber = Number(operation.payload.issueNumber);
@@ -552,6 +536,11 @@ export class OutboxProcessor {
           await db.githubIssuesCache.put(finalIssue);
           await db.outbox.delete(operation.id);
         });
+        markRepositoryMutation(
+          operation.accountId,
+          operation.repositoryFullName,
+          `${finalIssue.repositoryFullName}#${finalIssue.issueNumber}`,
+        );
       } else if (operation.type === 'close_and_copy') {
         const issueNumber = Number(operation.payload.issueNumber);
         const issue = await api.updateIssue(operation.repositoryFullName, issueNumber, {
@@ -569,7 +558,7 @@ export class OutboxProcessor {
           status: 'question',
           repositoryFullName: operation.repositoryFullName,
           localTags: Array.isArray(rawNote.localTags) ? (rawNote.localTags as string[]) : [],
-          checklist: Array.isArray(rawNote.checklist) ? (rawNote.checklist as any) : [],
+          checklist: Array.isArray(rawNote.checklist) ? (rawNote.checklist as ChecklistItem[]) : [],
         });
         note.accountId = operation.accountId;
 
@@ -578,14 +567,19 @@ export class OutboxProcessor {
           await db.localNotes.add(note);
           await db.outbox.delete(operation.id);
         });
+        markRepositoryMutation(
+          operation.accountId,
+          operation.repositoryFullName,
+          `${finalIssue.repositoryFullName}#${finalIssue.issueNumber}`,
+        );
       }
 
       return true;
     } catch (error) {
-      const status = errorStatus(error);
-      const message = safeMessage(error);
+      const parsed = parseGitHubError(error);
+      const message = parsed.message;
 
-      if (status === 401) {
+      if (parsed.kind === 'unauthorized') {
         await db.outbox.update(operation.id, {
           state: 'failed',
           lastError: 'Сессия GitHub истекла. Войдите снова.',
@@ -595,8 +589,8 @@ export class OutboxProcessor {
         return false;
       }
 
-      if (isRateLimit(status, error)) {
-        const retryAt = retryAtFromError(error);
+      if (parsed.kind === 'rate-limit') {
+        const retryAt = parsed.retryAt || new Date(Date.now() + 60_000).toISOString();
         await db.outbox.update(operation.id, {
           state: 'failed',
           nextAttemptAt: retryAt,
@@ -607,7 +601,7 @@ export class OutboxProcessor {
         return false;
       }
 
-      if (status === 403) {
+      if (parsed.kind === 'permission-denied') {
         // 403 = локальная ошибка конкретного репо/операции: переводим в attention и продолжаем
         const hint = 'Убедитесь, что GitHub App установлен с разрешением Issues: Read & write.';
         await db.outbox.update(operation.id, {
@@ -619,7 +613,7 @@ export class OutboxProcessor {
         return true; // продолжаем обработку других операций
       }
 
-      if (status === 404) {
+      if (parsed.kind === 'not-found') {
         await db.outbox.update(operation.id, {
           state: 'attention',
           lastError: 'Репозиторий или Issue не найден (404). Проверьте доступ.',
@@ -628,7 +622,7 @@ export class OutboxProcessor {
         return true;
       }
 
-      if (status === 422) {
+      if (parsed.kind === 'validation') {
         await db.outbox.update(operation.id, {
           state: 'attention',
           lastError: `Ошибка данных GitHub (422): ${message}. Проверьте содержимое операции.`,
@@ -645,6 +639,7 @@ export class OutboxProcessor {
         await db.outbox.update(operation.id, {
           state: 'attention',
           lastError: `Неизвестно, создался ли Issue: ${message}. Проверьте GitHub перед повтором.`,
+          ambiguityRisk: true,
           updatedAt: new Date().toISOString(),
         });
         return true;

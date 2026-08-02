@@ -1,5 +1,6 @@
 import { Check, Clipboard, ExternalLink, LoaderCircle, X } from 'lucide-react';
 import { useAppStore } from '../state/app-store';
+import { APP_CONFIG } from '../config';
 
 export function AuthModal() {
   const auth = useAppStore((state) => state.auth);
@@ -82,7 +83,7 @@ export function AuthModal() {
               >
                 Попробовать снова
               </button>
-            ) : (
+            ) : APP_CONFIG.oauth.legacyDeviceFlowEnabled ? (
               <button
                 className="primary"
                 onClick={() => {
@@ -91,6 +92,16 @@ export function AuthModal() {
                 }}
               >
                 Попробовать снова
+              </button>
+            ) : (
+              <button
+                className="primary"
+                onClick={() => {
+                  logout();
+                  void loginWithPkce();
+                }}
+              >
+                Проверить конфигурацию OAuth
               </button>
             )}
           </div>

@@ -1,61 +1,100 @@
 import { useDraggable } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
-import { AlertTriangle, Circle, CloudOff, GripVertical } from 'lucide-react';
-import { PRIORITY_LABELS, STATUS_LABELS, type GitHubIssue, type LocalNote } from '../domain/types';
+import { AlertTriangle, Circle, Clock, CloudOff, GripVertical } from 'lucide-react';
 import { visibleLabels } from '../domain/github-mapping';
+import {
+  OUTBOX_STATE_LABELS,
+  PRIORITY_LABELS,
+  STATUS_LABELS,
+  SYNC_STATE_LABELS,
+  type GitHubIssue,
+  type LocalNote,
+  type PendingIssue,
+} from '../domain/types';
 import { useAppStore } from '../state/app-store';
 
-type Props = { item: LocalNote | GitHubIssue; kind: 'note' | 'issue'; compact?: boolean };
+type Props =
+  | { item: LocalNote; kind: 'note'; compact?: boolean }
+  | { item: GitHubIssue; kind: 'issue'; compact?: boolean }
+  | { item: PendingIssue; kind: 'pending'; compact?: boolean };
 
 export function TaskRow({ item, kind, compact = false }: Props) {
   const setSelectedTask = useAppStore((state) => state.setSelectedTask);
   const openEntity = useAppStore((state) => state.openEntity);
+  const pending = kind === 'pending' ? item : null;
+  const issue = kind === 'issue' ? item : null;
+  const note = kind === 'note' ? item : null;
+  const linkedOperation = useAppStore((state) =>
+    pending
+      ? state.outbox.find((operation) => operation.entityKey === pending.clientLocalId)
+      : undefined,
+  );
   const key =
-    kind === 'note'
-      ? (item as LocalNote).id
-      : `${(item as GitHubIssue).repositoryFullName}#${(item as GitHubIssue).issueNumber}`;
+    note?.id || pending?.clientLocalId || `${issue!.repositoryFullName}#${issue!.issueNumber}`;
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: `${kind}:${key}`,
     data: { type: kind, item },
+    disabled: kind === 'pending',
   });
-  const issue = kind === 'issue' ? (item as GitHubIssue) : null;
-  const note = kind === 'note' ? (item as LocalNote) : null;
   const open = (newTab: boolean) =>
     void openEntity(
       note
         ? { kind: 'local-note', id: note.id }
-        : {
-            kind: 'issue',
-            repositoryFullName: issue!.repositoryFullName,
-            issueNumber: issue!.issueNumber,
-          },
+        : pending
+          ? {
+              kind: 'pending-issue',
+              repositoryFullName: pending.repositoryFullName,
+              clientLocalId: pending.clientLocalId,
+            }
+          : {
+              kind: 'issue',
+              repositoryFullName: issue!.repositoryFullName,
+              issueNumber: issue!.issueNumber,
+            },
       { newTab, duplicate: newTab },
     );
+  const taskStatus = note?.status || issue?.derivedStatus || pending?.derivedStatus;
+  const taskPriority = issue?.derivedPriority || pending?.derivedPriority;
+  const synchronizedItem = note || issue;
   return (
     <div
       ref={setNodeRef}
       data-task-key={key}
       style={{ transform: CSS.Translate.toString(transform), opacity: isDragging ? 0.55 : 1 }}
-      className={`task-row ${compact ? 'compact' : ''}`}
+      className={`task-row ${compact ? 'compact' : ''} ${pending ? 'pending-task' : ''}`}
       tabIndex={0}
       onClick={(event) => {
         if (event.shiftKey) open(true);
-        else setSelectedTask(note ? { kind: 'note', id: note.id } : { kind: 'issue', key });
+        else if (note) setSelectedTask({ kind: 'note', id: note.id });
+        else if (pending)
+          setSelectedTask({ kind: 'pending-issue', clientLocalId: pending.clientLocalId });
+        else setSelectedTask({ kind: 'issue', key });
       }}
       onDoubleClick={() => open(false)}
       onKeyDown={(event) => {
         if (event.key === 'Enter') open(event.shiftKey);
       }}
     >
-      <button className="drag-handle" aria-label="Перетащить задачу" {...listeners} {...attributes}>
-        <GripVertical size={13} />
-      </button>
-      <Circle size={11} className={`status-dot status-${note?.status || issue?.derivedStatus}`} />
+      {pending ? (
+        <span className="drag-handle disabled" title="Pending Issue нельзя перемещать">
+          <Clock size={13} />
+        </span>
+      ) : (
+        <button
+          className="drag-handle"
+          aria-label="Перетащить задачу"
+          {...listeners}
+          {...attributes}
+        >
+          <GripVertical size={13} />
+        </button>
+      )}
+      <Circle size={11} className={`status-dot status-${taskStatus}`} />
       <span className="task-title">{item.title}</span>
-      {issue && (
+      {taskPriority && (
         <span
-          className={`priority-dot priority-${issue.derivedPriority}`}
-          title={PRIORITY_LABELS[issue.derivedPriority]}
+          className={`priority-dot priority-${taskPriority}`}
+          title={PRIORITY_LABELS[taskPriority]}
         />
       )}
       {issue &&
@@ -73,12 +112,22 @@ export function TaskRow({ item, kind, compact = false }: Props) {
       {issue?.statusConflict || issue?.priorityConflict ? (
         <AlertTriangle size={14} className="warning" aria-label="Конфликт системных labels" />
       ) : null}
-      {item.syncState !== 'synced' && item.syncState !== 'local' && (
-        <span className={`sync-state ${item.syncState}`}>
-          <CloudOff size={12} /> {item.syncState}
+      {synchronizedItem &&
+        synchronizedItem.syncState !== 'synced' &&
+        synchronizedItem.syncState !== 'local' && (
+          <span className={`sync-state ${synchronizedItem.syncState}`}>
+            <CloudOff size={12} /> {SYNC_STATE_LABELS[synchronizedItem.syncState]}
+          </span>
+        )}
+      {pending && (
+        <span className={`sync-state ${linkedOperation?.state || 'attention'}`}>
+          <CloudOff size={12} />{' '}
+          {linkedOperation ? OUTBOX_STATE_LABELS[linkedOperation.state] : 'Требует проверки'}
         </span>
       )}
-      {!compact && <small>{note ? STATUS_LABELS[note.status] : `#${issue?.issueNumber}`}</small>}
+      {!compact && (
+        <small>{pending || note ? STATUS_LABELS[taskStatus!] : `#${issue?.issueNumber}`}</small>
+      )}
     </div>
   );
 }

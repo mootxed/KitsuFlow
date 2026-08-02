@@ -2,14 +2,7 @@ export type TaskStatus = 'todo' | 'in_progress' | 'done' | 'postponed' | 'questi
 export type IssuePriority = 'none' | 'low' | 'medium' | 'high' | 'urgent';
 /** Состояния синхронизации сущности. attention/exhausted используются операциями outbox. */
 export type SyncState =
-  | 'local'
-  | 'pending'
-  | 'syncing'
-  | 'synced'
-  | 'failed'
-  | 'conflict'
-  | 'attention'
-  | 'exhausted';
+  'local' | 'pending' | 'syncing' | 'synced' | 'failed' | 'conflict' | 'attention' | 'exhausted';
 
 export interface ChecklistItem {
   id: string;
@@ -104,6 +97,10 @@ export interface PendingIssue {
   assignees: string[];
   createdAt: string;
   updatedAt: string;
+  /** Запись требует ручной проверки после неоднозначной legacy-миграции. */
+  needsAttention?: boolean | undefined;
+  /** Безопасная диагностика миграции, не содержащая секретов. */
+  migrationDiagnostic?: string | undefined;
 }
 
 export interface Repository {
@@ -175,6 +172,8 @@ export interface OutboxOperation {
   creationStage?: OutboxCreationStage | undefined;
   createdIssueNumber?: number | undefined;
   createdIssueNodeId?: string | undefined;
+  /** POST мог завершиться на GitHub, хотя клиент не получил ответ. */
+  ambiguityRisk?: boolean | undefined;
 }
 
 export interface GitHubUser {
@@ -219,4 +218,12 @@ export const OUTBOX_STATE_LABELS: Record<OutboxState, string> = {
   failed: 'Ошибка (автоповтор)',
   attention: 'Требует внимания',
   exhausted: 'Попытки исчерпаны',
+};
+
+/** Русские названия типов операций outbox. */
+export const OUTBOX_TYPE_LABELS: Record<OutboxType, string> = {
+  create_issue: 'Создание Issue',
+  update_issue: 'Обновление Issue',
+  convert_note: 'Публикация заметки',
+  close_and_copy: 'Перенос в «Под вопросом»',
 };

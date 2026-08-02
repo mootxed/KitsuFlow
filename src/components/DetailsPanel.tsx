@@ -7,6 +7,7 @@ import {
   STATUS_LABELS,
   SYNC_STATE_LABELS,
   type GitHubIssue,
+  type IssuePriority,
   type LocalNote,
   type TaskStatus,
 } from '../domain/types';
@@ -184,7 +185,9 @@ export function DetailsContent({
           Статус
           <select
             value={issue.derivedStatus}
-            onChange={(event) => void changeIssueStatus(issue, event.target.value as any)}
+            onChange={(event) =>
+              void changeIssueStatus(issue, event.target.value as Exclude<TaskStatus, 'question'>)
+            }
           >
             {(['todo', 'in_progress', 'done', 'postponed'] as const).map((status) => (
               <option key={status} value={status}>
@@ -197,7 +200,9 @@ export function DetailsContent({
           Приоритет
           <select
             value={issue.derivedPriority}
-            onChange={(event) => void changeIssuePriority(issue, event.target.value as any)}
+            onChange={(event) =>
+              void changeIssuePriority(issue, event.target.value as IssuePriority)
+            }
           >
             {Object.entries(PRIORITY_LABELS).map(([value, label]) => (
               <option key={value} value={value}>
@@ -222,18 +227,10 @@ export function DetailsContent({
           components={{
             // Безопасный рендерер ссылок: блокируем javascript: схемы
             a: ({ href, children, ...props }) => {
-              const isSafe =
-                href &&
-                !href.startsWith('javascript:') &&
-                !href.startsWith('data:');
+              const isSafe = href && !href.startsWith('javascript:') && !href.startsWith('data:');
               if (!isSafe) return <span>{children}</span>;
               return (
-                <a
-                  {...props}
-                  href={href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
+                <a {...props} href={href} target="_blank" rel="noopener noreferrer">
                   {children}
                 </a>
               );
@@ -375,9 +372,7 @@ export function DetailsPanel() {
           <p>Issue был успешно отправлен на GitHub.</p>
         </div>
       )}
-      {selected.kind !== 'pending-issue' && (
-        <DetailsContent note={note} issue={issue} />
-      )}
+      {selected.kind !== 'pending-issue' && <DetailsContent note={note} issue={issue} />}
     </aside>
   );
 }

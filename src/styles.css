@@ -501,12 +501,21 @@ kbd {
 .task-row:hover {
   background: #fafafb;
 }
+.task-row.pending-task {
+  border-style: dashed;
+  background: #fffdf7;
+}
 .task-row .drag-handle {
   flex: 0 0 auto;
   border: 0;
   background: transparent;
   color: #b1b3b8;
   padding: 2px;
+}
+.task-row .drag-handle.disabled {
+  display: inline-flex;
+  cursor: not-allowed;
+  opacity: 0.7;
 }
 .task-title {
   flex: 1;
@@ -783,6 +792,33 @@ kbd {
   color: #7b581e;
   font-size: 10px;
   line-height: 1.45;
+}
+.pending-banner {
+  display: grid;
+  gap: 5px;
+  border: 1px solid #d6c18d;
+  border-radius: 6px;
+  background: #fffaf0;
+  padding: 9px 11px;
+  color: #6f571e;
+  font-size: 10px;
+  line-height: 1.45;
+}
+.pending-banner.state-failed,
+.pending-banner.state-attention,
+.pending-banner.state-exhausted {
+  border-color: #e0a4a4;
+  background: #fff5f5;
+  color: #812f2f;
+}
+.conflict-notice:has(svg) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.conflict-notice:has(svg) span {
+  flex: 1 1 260px;
 }
 
 .modal-backdrop {

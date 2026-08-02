@@ -8,6 +8,7 @@ import { useShallow } from 'zustand/react/shallow';
 export function AllTasks() {
   const notes = useAppStore((state) => state.notes);
   const issues = useAppStore((state) => state.issues);
+  const pendingIssues = useAppStore((state) => state.pendingIssues);
   const repositories = useAppStore(
     useShallow((state) => state.repositories.filter((repo) => repo.pinned)),
   );
@@ -33,12 +34,21 @@ export function AllTasks() {
     [issues, pinnedRepoNames, statuses],
   );
 
+  const pinnedPendingIssues = useMemo(
+    () =>
+      pendingIssues.filter(
+        (issue) =>
+          pinnedRepoNames.has(issue.repositoryFullName) && statuses.includes(issue.derivedStatus),
+      ),
+    [pendingIssues, pinnedRepoNames, statuses],
+  );
+
   const toggle = (status: TaskStatus) =>
     setStatuses((current) =>
       current.includes(status) ? current.filter((item) => item !== status) : [...current, status],
     );
 
-  const total = localNotes.length + pinnedIssues.length;
+  const total = localNotes.length + pinnedIssues.length + pinnedPendingIssues.length;
 
   return (
     <div className="screen all-tasks">
@@ -91,15 +101,18 @@ export function AllTasks() {
             const repoIssues = pinnedIssues.filter(
               (issue) => issue.repositoryFullName === repository.fullName,
             );
+            const repoPendingIssues = pinnedPendingIssues.filter(
+              (issue) => issue.repositoryFullName === repository.fullName,
+            );
 
-            if (repoIssues.length === 0) return null;
+            if (repoIssues.length === 0 && repoPendingIssues.length === 0) return null;
 
             return (
               <section className="task-group" key={repository.fullName}>
                 <h2>
                   <span className="repo-mark">{repository.owner.slice(0, 1).toUpperCase()}</span>
                   {repository.fullName}
-                  <b>{repoIssues.length}</b>
+                  <b>{repoIssues.length + repoPendingIssues.length}</b>
                 </h2>
                 <div className="task-list">
                   {repoIssues.map((issue) => (
@@ -109,6 +122,9 @@ export function AllTasks() {
                       item={issue}
                       compact
                     />
+                  ))}
+                  {repoPendingIssues.map((issue) => (
+                    <TaskRow key={issue.clientLocalId} kind="pending" item={issue} compact />
                   ))}
                 </div>
               </section>

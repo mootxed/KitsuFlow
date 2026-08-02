@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import Dexie from 'dexie';
 import { migrateLegacyDb } from '../../src/data/migrate-legacy-db';
-import { db } from '../../src/data/db';
+import { KitsuFlowDatabase, db } from '../../src/data/db';
 
 const LEGACY_DB_NAME = 'kitsune-manager';
 const NEW_DB_NAME = 'kitsuflow-db';
@@ -209,5 +210,106 @@ describe('IndexedDB legacy migration & schema version 4 upgrade', () => {
     const issues = await db.githubIssuesCache.toArray();
     expect(issues).toHaveLength(2);
     expect(issues.map((i) => i.title).sort()).toEqual(['Alice Issue #1', 'Bob Issue #1']);
+  });
+});
+
+describe('IndexedDB schema v5 → v6', () => {
+  it('migrates a temporary issue, its outbox link and #-1 tab without losing data', async () => {
+    const name = `kitsuflow-v5-${crypto.randomUUID()}`;
+    const old = new Dexie(name);
+    old.version(5).stores({
+      localNotes: 'id, status, repositoryFullName, updatedAt, syncState, accountId',
+      githubIssuesCache:
+        '[accountId+repositoryFullName+issueNumber], accountId, repositoryFullName, derivedStatus, updatedAt, syncState, clientLocalId',
+      pendingIssues: 'clientLocalId, accountId, repositoryFullName, createdAt',
+      repositoriesCache:
+        '[accountId+fullName], accountId, fullName, pinned, installationId, updatedAt',
+      repositoryLabelsCache:
+        '[accountId+repositoryFullName], accountId, repositoryFullName, cachedAt',
+      repositoryAssigneesCache:
+        '[accountId+repositoryFullName], accountId, repositoryFullName, cachedAt',
+      outbox:
+        'id, type, entityKey, state, repositoryFullName, accountId, createdAt, nextAttemptAt, leaseExpiresAt',
+      tabs: 'id, accountId, active, position',
+      settings: 'key',
+      syncMetadata: 'key, accountId, updatedAt',
+    });
+    await old.open();
+    const now = '2026-08-01T00:00:00Z';
+    await old.table('githubIssuesCache').put({
+      repositoryFullName: 'acme/repo',
+      nodeId: 'temporary',
+      issueNumber: -1,
+      title: 'Legacy pending',
+      body: 'body',
+      state: 'open',
+      derivedStatus: 'todo',
+      derivedPriority: 'high',
+      labels: [],
+      assignees: [],
+      htmlUrl: '',
+      createdAt: now,
+      updatedAt: now,
+      cachedAt: now,
+      syncState: 'pending',
+      statusConflict: false,
+      priorityConflict: false,
+      accountId: '1001',
+    });
+    await old.table('outbox').put({
+      id: 'legacy-create',
+      type: 'create_issue',
+      entityKey: 'stable-client-id',
+      repositoryFullName: 'acme/repo',
+      payload: { title: 'Legacy pending' },
+      state: 'pending',
+      requestStarted: false,
+      attemptCount: 0,
+      createdAt: now,
+      updatedAt: now,
+      accountId: '1001',
+    });
+    await old.table('tabs').bulkPut([
+      {
+        id: 'legacy-tab',
+        entity: { kind: 'issue', repositoryFullName: 'acme/repo', issueNumber: -1 },
+        title: 'repo #-1',
+        position: 8,
+        active: true,
+        accountId: '1001',
+      },
+      {
+        id: 'all-tab',
+        entity: { kind: 'all' },
+        title: 'Все задачи',
+        position: 8,
+        active: true,
+        accountId: '1001',
+      },
+    ]);
+    old.close();
+
+    const upgraded = new KitsuFlowDatabase(name);
+    await upgraded.open();
+    expect(upgraded.verno).toBe(6);
+    expect(await upgraded.githubIssuesCache.count()).toBe(0);
+    expect(await upgraded.pendingIssues.get('stable-client-id')).toMatchObject({
+      title: 'Legacy pending',
+      accountId: '1001',
+    });
+    expect(await upgraded.outbox.get('legacy-create')).toMatchObject({
+      entityKey: 'stable-client-id',
+      payload: { clientLocalId: 'stable-client-id' },
+    });
+    const tabs = await upgraded.tabs.where('accountId').equals('1001').sortBy('position');
+    expect(tabs.map((tab) => tab.position)).toEqual([0, 1]);
+    expect(tabs.filter((tab) => tab.active)).toHaveLength(1);
+    expect(tabs.find((tab) => tab.id === 'legacy-tab')?.entity).toEqual({
+      kind: 'pending-issue',
+      repositoryFullName: 'acme/repo',
+      clientLocalId: 'stable-client-id',
+    });
+    upgraded.close();
+    await Dexie.delete(name);
   });
 });

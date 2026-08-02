@@ -20,10 +20,20 @@ export interface PkceState {
   oauthState: string;
 }
 
-export interface OAuthCallbackParams {
+export interface OAuthCallbackSuccess {
+  kind: 'success';
   code: string;
   state: string;
 }
+
+export interface OAuthCallbackError {
+  kind: 'error';
+  error: string;
+  errorDescription?: string | undefined;
+  errorUri?: string | undefined;
+}
+
+export type OAuthCallbackParams = OAuthCallbackSuccess | OAuthCallbackError;
 
 /** Генерирует криптографически стойкий code_verifier (43–128 символов). */
 async function generateCodeVerifier(): Promise<string> {
@@ -107,10 +117,28 @@ export async function buildAuthUrl(clientId: string, pkce: PkceState): Promise<s
  * Возвращает null, если параметры отсутствуют.
  */
 export function parseCallback(url: URL): OAuthCallbackParams | null {
+  const error = url.searchParams.get('error');
+  if (error) {
+    return {
+      kind: 'error',
+      error,
+      errorDescription: url.searchParams.get('error_description') || undefined,
+      errorUri: url.searchParams.get('error_uri') || undefined,
+    };
+  }
   const code = url.searchParams.get('code');
   const state = url.searchParams.get('state');
   if (!code || !state) return null;
-  return { code, state };
+  return { kind: 'success', code, state };
+}
+
+/** Удаляет только OAuth-параметры, сохраняя base path и hash-route. */
+export function cleanOAuthCallbackUrl(url: URL): string {
+  const cleaned = new URL(url.toString());
+  for (const name of ['code', 'state', 'error', 'error_description', 'error_uri']) {
+    cleaned.searchParams.delete(name);
+  }
+  return `${cleaned.pathname}${cleaned.search}${cleaned.hash}`;
 }
 
 /**
@@ -161,7 +189,11 @@ export async function exchangeCode(
     throw new Error(`OAuth proxy вернул HTTP ${response.status}.`);
   }
 
-  const data = (await response.json()) as { access_token?: string; error?: string; error_description?: string };
+  const data = (await response.json()) as {
+    access_token?: string;
+    error?: string;
+    error_description?: string;
+  };
 
   if (data.error) {
     throw new Error(data.error_description || data.error);

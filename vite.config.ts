@@ -2,10 +2,21 @@ import react from '@vitejs/plugin-react';
 import { defineConfig, loadEnv } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
+function oauthProxyOrigin(rawUrl: string | undefined): string {
+  if (!rawUrl) return '';
+  const url = new URL(rawUrl);
+  const isLocalHttp = url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname);
+  if (url.protocol !== 'https:' && !isLocalHttp) {
+    throw new Error('VITE_OAUTH_PROXY_URL должен использовать HTTPS (кроме localhost).');
+  }
+  return url.origin;
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
 
   const appName = env.VITE_APP_NAME || 'KitsuFlow';
+  const proxyOrigin = oauthProxyOrigin(env.VITE_OAUTH_PROXY_URL);
 
   // Нормализуем base path: всегда начинается и заканчивается на '/'
   let base = env.VITE_BASE_PATH || '/';
@@ -31,6 +42,12 @@ export default defineConfig(({ mode }) => {
       },
     },
     plugins: [
+      {
+        name: 'kitsuflow-oauth-proxy-csp',
+        transformIndexHtml(html) {
+          return html.replace('__OAUTH_PROXY_CONNECT_SRC__', proxyOrigin ? ` ${proxyOrigin}` : '');
+        },
+      },
       react(),
       VitePWA({
         registerType: 'prompt',

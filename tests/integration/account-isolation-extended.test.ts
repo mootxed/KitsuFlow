@@ -31,7 +31,6 @@ describe('Extended Account Isolation & Session Generation Safety', () => {
       getLabels: async () => [],
     };
 
-
     useAppStore.setState({
       user,
       api: mockApi as any,
@@ -156,5 +155,108 @@ describe('Extended Account Isolation & Session Generation Safety', () => {
     expect(op?.accountId).toBe('1001');
 
     expect(useAppStore.getState().legacyClaim.hasLegacyData).toBe(false);
+  });
+
+  it('claims pending Issues and caches, normalizes tabs, then runs transferred outbox', async () => {
+    const user = { id: 1001, login: 'alice', name: 'Alice', avatarUrl: '' };
+    const now = new Date().toISOString();
+    await db.repositoriesCache.put({
+      id: 1,
+      installationId: 1,
+      fullName: 'org/repo',
+      owner: 'org',
+      name: 'repo',
+      private: false,
+      permissions: { pull: true, push: true },
+      pinned: true,
+      updatedAt: now,
+      accountId: 'legacy-unassigned',
+    });
+    await db.pendingIssues.put({
+      clientLocalId: 'legacy-pending',
+      repositoryFullName: 'org/repo',
+      accountId: 'legacy-unassigned',
+      title: 'Claim and publish',
+      body: '',
+      state: 'open',
+      derivedStatus: 'todo',
+      derivedPriority: 'none',
+      labels: [],
+      assignees: [],
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.outbox.put({
+      id: 'legacy-create',
+      type: 'create_issue',
+      entityKey: 'legacy-pending',
+      repositoryFullName: 'org/repo',
+      payload: { title: 'Claim and publish', clientLocalId: 'legacy-pending' },
+      state: 'pending',
+      requestStarted: false,
+      attemptCount: 0,
+      createdAt: now,
+      updatedAt: now,
+      accountId: 'legacy-unassigned',
+    });
+    await db.repositoryLabelsCache.put({
+      repositoryFullName: 'org/repo',
+      labels: [{ name: 'bug', color: 'ff0000' }],
+      cachedAt: now,
+      accountId: 'legacy-unassigned',
+    });
+    await db.repositoryAssigneesCache.put({
+      repositoryFullName: 'org/repo',
+      assignees: ['alice'],
+      cachedAt: now,
+      accountId: 'legacy-unassigned',
+    });
+    await db.tabs.bulkPut([
+      {
+        id: 'legacy-pending-tab',
+        entity: {
+          kind: 'pending-issue',
+          repositoryFullName: 'org/repo',
+          clientLocalId: 'legacy-pending',
+        },
+        title: 'Claim and publish',
+        position: 4,
+        active: true,
+        accountId: 'legacy-unassigned',
+      },
+      {
+        id: 'legacy-all-tab',
+        entity: { kind: 'all' },
+        title: 'Все задачи',
+        position: 4,
+        active: true,
+        accountId: 'legacy-unassigned',
+      },
+    ]);
+    const created = normalizeIssue(
+      'org/repo',
+      apiIssue({ number: 90, title: 'Claim and publish' }),
+      '1001',
+    );
+    useAppStore.setState({
+      user,
+      api: {
+        createIssue: async () => created,
+        getIssues: async () => [created],
+        getLabels: async () => [],
+      } as never,
+    });
+
+    await useAppStore.getState().claimLegacyData();
+
+    expect(await db.pendingIssues.count()).toBe(0);
+    expect(await db.outbox.count()).toBe(0);
+    expect(await db.githubIssuesCache.get(['1001', 'org/repo', 90])).toBeDefined();
+    expect(await db.repositoryLabelsCache.get(['1001', 'org/repo'])).toBeDefined();
+    expect(await db.repositoryAssigneesCache.get(['1001', 'org/repo'])).toBeDefined();
+    const tabs = await db.tabs.where('accountId').equals('1001').sortBy('position');
+    expect(tabs.map((tab) => tab.position)).toEqual([0, 1]);
+    expect(tabs.filter((tab) => tab.active)).toHaveLength(1);
+    expect(tabs.some((tab) => tab.entity.kind === 'issue')).toBe(true);
   });
 });
