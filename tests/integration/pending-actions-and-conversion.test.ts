@@ -313,14 +313,14 @@ describe('pending actions and note conversion lifecycle', () => {
       conversionDialog: { noteId: note.id },
       repositories: [
         {
+          id: 1,
+          installationId: 1,
           fullName: 'acme/repo',
           name: 'repo',
           owner: 'acme',
-          isPrivate: false,
-          defaultBranch: 'main',
+          private: false,
+          permissions: { pull: true, push: true },
           pinned: true,
-          pinnedAt: now,
-          permissions: { push: true },
           updatedAt: now,
           accountId: '1001',
         },
