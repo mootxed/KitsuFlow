@@ -1,5 +1,5 @@
 import { DndContext, type DragEndEvent, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useRegisterSW } from 'virtual:pwa-register/react';
 import { useAppStore } from './state/app-store';
 import type { GitHubIssue, IssuePriority, LocalNote, TaskStatus } from './domain/types';
@@ -37,6 +37,8 @@ export function App() {
   const moveIssue = useAppStore((state) => state.moveIssue);
   const moveIssueToQuestion = useAppStore((state) => state.moveIssueToQuestion);
 
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const {
     needRefresh: [needRefresh],
@@ -62,7 +64,8 @@ export function App() {
         setCreateOpen(true, { initialRepositoryFullName: repoFullName });
       }
       if (event.key === 'Escape') {
-        if (createDialog.open) setCreateOpen(false);
+        if (mobileMenuOpen) setMobileMenuOpen(false);
+        else if (createDialog.open) setCreateOpen(false);
         else if (repositoryPickerOpen) setRepositoryPickerOpen(false);
         else if (conversionDialog.noteId) setConversionNoteId(null);
         else if (auth.phase !== 'idle') logout();
@@ -75,6 +78,7 @@ export function App() {
     conversionDialog.noteId,
     createDialog.open,
     logout,
+    mobileMenuOpen,
     repositoryPickerOpen,
     setConversionNoteId,
     setCreateOpen,
@@ -150,9 +154,9 @@ export function App() {
   return (
     <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
       <div className="app-shell">
-        <Sidebar />
+        <Sidebar open={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} />
         <main className="main-shell">
-          <TabBar />
+          <TabBar onToggleMobileMenu={() => setMobileMenuOpen((prev) => !prev)} />
           <Workspace />
         </main>
         <DetailsPanel />

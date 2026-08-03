@@ -7,11 +7,11 @@
   --fg: oklch(0.2593 0.0144 261.67);
   --muted: oklch(0.5444 0.035 265.11);
   --border: oklch(0.9307 0.01 267.36);
-  --accent: oklch(0.6602 0.1143 251.70);
+  --accent: oklch(0.6602 0.1143 251.7);
 
-  --font-display: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  --font-mono: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --font-display: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-mono: ui-monospace, 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
 }
 ```
 

@@ -1,20 +1,19 @@
 import { useDroppable } from '@dnd-kit/core';
-import {
-  AlertCircle,
-  CircleDot,
-  FolderGit2,
-  LogIn,
-  LogOut,
-  Plus,
-  RefreshCw,
-  Rows3,
-} from 'lucide-react';
+import { AlertCircle, FolderGit2, LogIn, LogOut, Plus, RefreshCw, Rows3 } from 'lucide-react';
 import { APP_CONFIG } from '../config';
 import type { Repository } from '../domain/types';
 import { useAppStore } from '../state/app-store';
 import { useShallow } from 'zustand/react/shallow';
 
-function RepositoryLink({ repository }: { repository: Repository }) {
+function RepositoryLink({
+  repository,
+  active,
+  count,
+}: {
+  repository: Repository;
+  active: boolean;
+  count: number;
+}) {
   const openEntity = useAppStore((state) => state.openEntity);
   const { setNodeRef, isOver } = useDroppable({
     id: `repository:${repository.fullName}`,
@@ -23,7 +22,7 @@ function RepositoryLink({ repository }: { repository: Repository }) {
   return (
     <button
       ref={setNodeRef}
-      className={`sidebar-link repository-link ${isOver ? 'drop-target' : ''}`}
+      className={`sidebar-link repository-link repo-item ${active ? 'active' : ''} ${isOver ? 'drop-target' : ''}`}
       onClick={(event) =>
         void openEntity(
           { kind: 'repository', repositoryFullName: repository.fullName },
@@ -32,8 +31,9 @@ function RepositoryLink({ repository }: { repository: Repository }) {
       }
       title={`${repository.fullName}. Shift + клик — новая вкладка`}
     >
-      <span className="repo-mark">{repository.owner.slice(0, 1).toUpperCase()}</span>
-      <span>{repository.name}</span>
+      <span className="repo-avatar">{repository.owner.slice(0, 1).toUpperCase()}</span>
+      <span className="repo-name">{repository.name}</span>
+      <span className="repo-count">{count}</span>
     </button>
   );
 }
@@ -80,11 +80,17 @@ function LegacyClaimBanner() {
   );
 }
 
-export function Sidebar() {
+export function Sidebar({ open = false, onClose }: { open?: boolean; onClose?: () => void }) {
   const user = useAppStore((state) => state.user);
   const repositories = useAppStore(
     useShallow((state) => state.repositories.filter((repository) => repository.pinned)),
   );
+  const issues = useAppStore((state) => state.issues);
+  const pendingIssues = useAppStore((state) => state.pendingIssues);
+  const notes = useAppStore((state) => state.notes);
+  const tabs = useAppStore((state) => state.tabs);
+  const activeTab = tabs.find((t) => t.active);
+
   const openEntity = useAppStore((state) => state.openEntity);
   const setPickerOpen = useAppStore((state) => state.setRepositoryPickerOpen);
   const login = useAppStore((state) => state.login);
@@ -93,69 +99,143 @@ export function Sidebar() {
   const refreshIssues = useAppStore((state) => state.refreshIssues);
   const hasPkceProxy = Boolean(import.meta.env.VITE_OAUTH_PROXY_URL);
 
+  const activeAllTasksCount =
+    notes.filter((n) => !n.repositoryFullName && n.status !== 'done').length +
+    issues.filter(
+      (i) =>
+        repositories.some((r) => r.fullName === i.repositoryFullName) && i.derivedStatus !== 'done',
+    ).length +
+    pendingIssues.filter(
+      (p) =>
+        repositories.some((r) => r.fullName === p.repositoryFullName) && p.derivedStatus !== 'done',
+    ).length;
+
+  const isAllActive = activeTab?.entity.kind === 'all';
+
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar ${open ? 'open' : ''}`} aria-label="Боковая панель">
       <div className="brand">
-        <CircleDot size={18} /> {APP_CONFIG.name}
+        <span className="brand-mark">
+          <svg
+            className="icon icon-18"
+            viewBox="0 0 24 24"
+            width="18"
+            height="18"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <circle cx="12" cy="12" r="7" />
+            <path d="M12 5v4m0 6v4M5 12h4m6 0h4" />
+          </svg>
+        </span>
+        <span className="brand-name">{APP_CONFIG.name}</span>
       </div>
-      <nav aria-label="Основная навигация">
-        <button className="sidebar-link" onClick={() => void openEntity({ kind: 'all' })}>
-          <Rows3 size={15} /> Все задачи
+      <nav className="sidebar-nav" aria-label="Основная навигация">
+        <button
+          className={`nav-item ${isAllActive ? 'active' : ''}`}
+          onClick={() => {
+            void openEntity({ kind: 'all' });
+            onClose?.();
+          }}
+        >
+          <Rows3 size={16} />
+          <span>Все задачи</span>
+          <span className="nav-count">{activeAllTasksCount}</span>
         </button>
-        <div className="sidebar-heading">
+        <div className="nav-section-label">
           <span>Репозитории</span>
-          <button aria-label="Выбрать репозитории" onClick={() => setPickerOpen(true)}>
-            <Plus size={14} />
+          <button
+            className="icon-btn"
+            title="Выбрать репозитории"
+            aria-label="Выбрать репозитории"
+            onClick={() => setPickerOpen(true)}
+          >
+            <Plus size={16} />
           </button>
         </div>
         <div className="repository-list">
-          {repositories.map((repository) => (
-            <RepositoryLink key={repository.fullName} repository={repository} />
-          ))}
+          {repositories.map((repository) => {
+            const isRepoActive =
+              activeTab?.entity.kind === 'repository' &&
+              activeTab.entity.repositoryFullName === repository.fullName;
+            const repoTaskCount =
+              issues.filter(
+                (i) => i.repositoryFullName === repository.fullName && i.derivedStatus !== 'done',
+              ).length +
+              pendingIssues.filter(
+                (p) => p.repositoryFullName === repository.fullName && p.derivedStatus !== 'done',
+              ).length +
+              notes.filter(
+                (n) => n.repositoryFullName === repository.fullName && n.status === 'question',
+              ).length;
+
+            return (
+              <RepositoryLink
+                key={repository.fullName}
+                repository={repository}
+                active={isRepoActive}
+                count={repoTaskCount}
+              />
+            );
+          })}
           {!repositories.length && (
             <p className="sidebar-empty">
-              <FolderGit2 size={14} /> Репозитории не закреплены
+              <FolderGit2 size={14} /> Нет закрепленных репозиториев
             </p>
           )}
         </div>
       </nav>
       <LegacyClaimBanner />
-      <div className="sidebar-footer">
+      <div className="account">
         {user ? (
           <>
-            <button
+            <div
               className="profile"
               onClick={() => void refreshIssues()}
-              title="Обновить Issues"
+              title="Обновить данные"
+              tabIndex={0}
+              role="button"
             >
-              <img src={user.avatarUrl} alt="" />
-              <span>
-                <strong>{user.name || user.login}</strong>
-                <small>@{user.login}</small>
-              </span>
-              <RefreshCw size={14} />
-            </button>
-            <button className="sidebar-link" onClick={logout}>
-              <LogOut size={14} /> Выйти
-            </button>
+              <img src={user.avatarUrl} alt={user.login} />
+              <div className="user-info">
+                <strong className="user-name">{user.name || user.login}</strong>
+                <small className="user-handle">@{user.login}</small>
+              </div>
+              <span className="sync-dot" title="Активный аккаунт" />
+            </div>
+            <div className="account-actions">
+              <button
+                className="btn btn-wide btn-sm sync-button"
+                onClick={() => void refreshIssues()}
+              >
+                <RefreshCw size={13} />
+                Синхронизировать
+              </button>
+              <button
+                className="icon-btn logout-button"
+                title="Выйти"
+                aria-label="Выйти"
+                onClick={logout}
+              >
+                <LogOut size={15} />
+              </button>
+            </div>
           </>
         ) : (
-          <div className="login-options">
-            {hasPkceProxy ? (
-              <button className="sidebar-link primary-dark" onClick={() => void loginWithPkce()}>
-                <LogIn size={15} /> Войти через GitHub
+          <div className="account-actions" style={{ gridTemplateColumns: '1fr' }}>
+            <button
+              className="btn btn-primary btn-wide btn-sm"
+              onClick={() => (hasPkceProxy ? void loginWithPkce() : void loginWithPkce())}
+            >
+              <LogIn size={14} /> Войти через GitHub
+            </button>
+            {APP_CONFIG.oauth.legacyDeviceFlowEnabled && !hasPkceProxy && (
+              <button className="btn btn-sm btn-wide" onClick={() => void login()}>
+                Legacy Device Flow
               </button>
-            ) : (
-              <>
-                <button className="sidebar-link primary-dark" onClick={() => void loginWithPkce()}>
-                  <LogIn size={15} /> Войти через GitHub
-                </button>
-                {APP_CONFIG.oauth.legacyDeviceFlowEnabled && (
-                  <button className="sidebar-link" onClick={() => void login()}>
-                    Legacy Device Flow (локально)
-                  </button>
-                )}
-              </>
             )}
           </div>
         )}

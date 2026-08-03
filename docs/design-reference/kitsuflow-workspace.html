@@ -1,0 +1,2545 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>KitsuFlow — личный рабочий стол</title>
+    <style>
+      :root {
+        --bg: oklch(0.9792 0.0041 271.37);
+        --surface: oklch(1 0 0);
+        --fg: oklch(0.2593 0.0144 261.67);
+        --muted: oklch(0.5444 0.035 265.11);
+        --border: oklch(0.9307 0.01 267.36);
+        --accent: oklch(0.6602 0.1143 251.7);
+        --soft: oklch(0.9668 0.0058 264.53);
+        --muted-soft: oklch(0.6591 0.0269 265.5);
+        --border-strong: oklch(0.8967 0.0147 264.49);
+        --todo-bg: oklch(0.9685 0.0384 89.09);
+        --todo-accent: oklch(0.7582 0.1317 84.7);
+        --progress-bg: oklch(0.9567 0.0211 252.5);
+        --progress-accent: oklch(0.6602 0.1143 251.7);
+        --done-bg: oklch(0.962 0.0215 154.13);
+        --done-accent: oklch(0.6747 0.0977 151.41);
+        --postponed-bg: oklch(0.9467 0.0235 301.95);
+        --postponed-accent: oklch(0.6127 0.1276 296.54);
+        --question-bg: oklch(0.9558 0.0206 358.68);
+        --question-accent: oklch(0.6722 0.1007 1.11);
+        --danger: oklch(0.583 0.187 24.2);
+        --shadow-card: 0 4px 16px color-mix(in oklch, var(--fg) 6%, transparent);
+        --shadow-floating: 0 18px 48px color-mix(in oklch, var(--fg) 15%, transparent);
+        --font-display: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+        --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+        --font-mono: ui-monospace, 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+        --sidebar-width: 260px;
+        --tabs-height: 46px;
+        --radius: 12px;
+        --radius-lg: 16px;
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html {
+        color-scheme: light;
+        -webkit-text-size-adjust: 100%;
+      }
+      body {
+        margin: 0;
+        min-width: 320px;
+        background: var(--bg);
+        color: var(--fg);
+        font: 15px/1.5 var(--font-body);
+        overflow: hidden;
+      }
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+        color: inherit;
+      }
+      button {
+        cursor: pointer;
+      }
+      button,
+      a,
+      input,
+      select,
+      textarea,
+      [tabindex] {
+        outline: none;
+      }
+      button:focus-visible,
+      a:focus-visible,
+      input:focus-visible,
+      select:focus-visible,
+      textarea:focus-visible,
+      [tabindex]:focus-visible {
+        box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 28%, transparent);
+        border-color: var(--accent) !important;
+      }
+      svg {
+        display: block;
+        flex: 0 0 auto;
+      }
+      h1,
+      h2,
+      h3,
+      h4,
+      p {
+        margin: 0;
+      }
+      h1,
+      h2,
+      h3,
+      h4 {
+        font-family: var(--font-display);
+        text-wrap: balance;
+      }
+      p {
+        text-wrap: pretty;
+      }
+      .icon {
+        width: 18px;
+        height: 18px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .icon-sm {
+        width: 15px;
+        height: 15px;
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      .app-shell {
+        display: grid;
+        grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+        height: 100vh;
+        background: var(--bg);
+      }
+      .sidebar {
+        position: relative;
+        z-index: 30;
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+        border-right: 1px solid var(--border);
+        background: var(--surface);
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        height: 68px;
+        padding: 0 20px;
+        border-bottom: 1px solid var(--border);
+        font-size: 18px;
+        font-weight: 760;
+        letter-spacing: -0.02em;
+      }
+      .brand-mark {
+        display: grid;
+        width: 32px;
+        height: 32px;
+        place-items: center;
+        border-radius: 10px;
+        background: var(--progress-bg);
+        color: var(--progress-accent);
+      }
+      .sidebar-nav {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        overflow-y: auto;
+        padding: 18px 12px;
+      }
+      .nav-item,
+      .repo-item {
+        width: 100%;
+        min-height: 46px;
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        border: 0;
+        border-radius: 12px;
+        background: transparent;
+        padding: 0 12px;
+        text-align: left;
+        font-weight: 600;
+      }
+      .nav-item:hover,
+      .repo-item:hover {
+        background: var(--soft);
+      }
+      .nav-item.active,
+      .repo-item.active {
+        background: var(--progress-bg);
+        color: color-mix(in oklch, var(--progress-accent) 80%, var(--fg));
+      }
+      .nav-item .count,
+      .repo-item .count {
+        margin-left: auto;
+        min-width: 24px;
+        border-radius: 999px;
+        background: color-mix(in oklch, var(--fg) 7%, transparent);
+        padding: 2px 8px;
+        color: var(--muted);
+        font: 12px/1.7 var(--font-mono);
+        text-align: center;
+      }
+      .nav-item.active .count,
+      .repo-item.active .count {
+        background: var(--surface);
+        color: var(--progress-accent);
+      }
+      .nav-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin: 24px 10px 8px 12px;
+        color: var(--muted);
+        font: 700 11px/1 var(--font-mono);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .icon-button {
+        width: 44px;
+        height: 44px;
+        display: inline-grid;
+        place-items: center;
+        border: 1px solid transparent;
+        border-radius: 10px;
+        background: transparent;
+        color: var(--muted);
+      }
+      .icon-button:hover {
+        background: var(--soft);
+        color: var(--fg);
+      }
+      .nav-heading .icon-button {
+        width: 44px;
+        height: 44px;
+        margin: -6px -8px -6px 0;
+      }
+      .repo-avatar {
+        display: grid;
+        width: 28px;
+        height: 28px;
+        place-items: center;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        background: var(--surface);
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 750;
+      }
+      .repo-name {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .github-auth-block {
+        margin-top: auto;
+        padding-top: 24px;
+      }
+      .github-auth-card {
+        display: grid;
+        grid-template-columns: 36px minmax(0, 1fr) 44px;
+        align-items: center;
+        gap: 9px;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: var(--soft);
+        padding: 9px;
+      }
+      .github-mark {
+        display: grid;
+        width: 36px;
+        height: 36px;
+        place-items: center;
+        border-radius: 11px;
+        background: var(--surface);
+        color: var(--fg);
+      }
+      .github-auth-copy {
+        min-width: 0;
+      }
+      .github-auth-copy strong,
+      .github-auth-copy small {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .github-auth-copy strong {
+        font-size: 12px;
+      }
+      .github-auth-copy small {
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .github-auth-card .icon-button {
+        color: var(--muted);
+      }
+      .account {
+        border-top: 1px solid var(--border);
+        padding: 14px 12px 16px;
+      }
+      .profile {
+        display: grid;
+        grid-template-columns: 42px 1fr auto;
+        align-items: center;
+        gap: 11px;
+        margin-bottom: 12px;
+        padding: 8px;
+        border-radius: 12px;
+      }
+      .profile:hover {
+        background: var(--soft);
+      }
+      .avatar {
+        display: grid;
+        width: 42px;
+        height: 42px;
+        place-items: center;
+        border-radius: 50%;
+        background: var(--question-bg);
+        color: var(--question-accent);
+        font-weight: 760;
+      }
+      .profile strong,
+      .profile small {
+        display: block;
+      }
+      .profile strong {
+        font-size: 14px;
+      }
+      .profile small {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .sync-dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--done-accent);
+        box-shadow: 0 0 0 3px var(--done-bg);
+      }
+      .account-actions {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
+      }
+
+      .main-shell {
+        min-width: 0;
+        display: grid;
+        grid-template-rows: var(--tabs-height) minmax(0, 1fr);
+      }
+      .tabbar {
+        min-width: 0;
+        display: flex;
+        align-items: stretch;
+        overflow-x: auto;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface);
+        scrollbar-width: thin;
+      }
+      .mobile-menu {
+        display: none;
+      }
+      .tab {
+        min-width: 156px;
+        max-width: 236px;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        border: 0;
+        border-right: 1px solid var(--border);
+        background: transparent;
+        padding: 0 8px 0 15px;
+        color: var(--muted);
+      }
+      .tab:hover {
+        background: var(--soft);
+        color: var(--fg);
+      }
+      .tab.active {
+        background: var(--progress-bg);
+        color: var(--fg);
+      }
+      .tab-label {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        text-align: left;
+        font-size: 14px;
+        font-weight: 650;
+      }
+      .tab-close {
+        width: 44px;
+        height: 44px;
+        display: grid;
+        flex: 0 0 44px;
+        place-items: center;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--muted);
+      }
+      .tab-close:hover {
+        background: var(--surface);
+        color: var(--fg);
+      }
+      .new-tab {
+        width: 46px;
+        height: 46px;
+        display: grid;
+        flex: 0 0 46px;
+        place-items: center;
+        border: 0;
+        border-right: 1px solid var(--border);
+        background: transparent;
+        color: var(--muted);
+      }
+      .new-tab:hover {
+        background: var(--soft);
+        color: var(--fg);
+      }
+
+      .workspace {
+        min-width: 0;
+        min-height: 0;
+        overflow: auto;
+        background: var(--bg);
+      }
+      .screen {
+        display: none;
+        min-width: 0;
+        padding: 28px 30px 70px;
+      }
+      .screen.active {
+        display: block;
+      }
+      .screen-header {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 22px;
+      }
+      .eyebrow {
+        margin-bottom: 4px;
+        color: var(--muted);
+        font: 700 11px/1.3 var(--font-mono);
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+      }
+      .screen-header h1 {
+        font-size: clamp(28px, 3vw, 32px);
+        line-height: 1.12;
+        letter-spacing: -0.03em;
+      }
+      .screen-meta {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        margin-top: 7px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .meta-divider {
+        color: var(--border-strong);
+      }
+      .repository-sync {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px 14px;
+        margin-top: 11px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .repository-sync-state,
+      .pending-summary {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+      }
+      .repository-sync-state strong {
+        color: var(--fg);
+        font-weight: 650;
+      }
+      .repository-sync-time {
+        color: var(--muted);
+      }
+      .pending-summary {
+        color: color-mix(in oklch, var(--todo-accent) 74%, var(--fg));
+      }
+      .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      #repo-screen {
+        padding-top: 18px;
+      }
+      #repo-screen .screen-header {
+        margin-bottom: 14px;
+      }
+      #repo-screen .eyebrow {
+        margin-bottom: 2px;
+      }
+      #repo-screen .repository-context {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 5px 14px;
+        margin-top: 5px;
+      }
+      #repo-screen .screen-meta,
+      #repo-screen .repository-sync {
+        margin-top: 0;
+      }
+      #repo-screen .repository-sync {
+        gap: 5px 12px;
+        font-size: 12px;
+      }
+      #repo-screen .toolbar {
+        margin-bottom: 14px;
+      }
+
+      .button {
+        min-height: 44px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        border: 1px solid var(--border-strong);
+        border-radius: 11px;
+        background: var(--surface);
+        padding: 0 15px;
+        color: var(--fg);
+        font-size: 14px;
+        font-weight: 650;
+        text-decoration: none;
+        transition:
+          background 160ms cubic-bezier(0.23, 1, 0.32, 1),
+          border-color 160ms cubic-bezier(0.23, 1, 0.32, 1),
+          transform 160ms cubic-bezier(0.23, 1, 0.32, 1),
+          box-shadow 160ms cubic-bezier(0.23, 1, 0.32, 1);
+      }
+      .button:hover {
+        border-color: color-mix(in oklch, var(--muted) 65%, var(--border));
+        background: var(--soft);
+      }
+      .button.selected {
+        border-color: color-mix(in oklch, var(--accent) 38%, var(--border));
+        background: var(--progress-bg);
+        color: color-mix(in oklch, var(--accent) 78%, var(--fg));
+      }
+      .button:active {
+        transform: translateY(1px);
+      }
+      .button-primary {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: var(--surface);
+      }
+      .button-primary:hover {
+        border-color: color-mix(in oklch, var(--accent) 82%, var(--fg));
+        background: color-mix(in oklch, var(--accent) 84%, var(--fg));
+        color: var(--surface);
+      }
+      .button-ghost {
+        border-color: transparent;
+        background: transparent;
+        color: var(--muted);
+      }
+      .button-ghost:hover {
+        border-color: transparent;
+        background: var(--soft);
+        color: var(--fg);
+      }
+      .button-danger {
+        color: var(--danger);
+      }
+      .button-wide {
+        width: 100%;
+      }
+      .button-small {
+        min-height: 44px;
+        padding-inline: 12px;
+        font-size: 13px;
+      }
+
+      .toolbar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 20px;
+      }
+      .search {
+        position: relative;
+        flex: 1 1 320px;
+        max-width: 460px;
+      }
+      .search .icon {
+        position: absolute;
+        top: 50%;
+        left: 14px;
+        transform: translateY(-50%);
+        color: var(--muted);
+        pointer-events: none;
+      }
+      .input,
+      .select,
+      .textarea {
+        width: 100%;
+        min-height: 44px;
+        border: 1px solid var(--border-strong);
+        border-radius: 11px;
+        background: var(--surface);
+        padding: 10px 13px;
+      }
+      .search .input {
+        padding-left: 43px;
+      }
+      .input::placeholder,
+      .textarea::placeholder {
+        color: var(--muted-soft);
+      }
+      .input:hover,
+      .select:hover,
+      .textarea:hover {
+        border-color: color-mix(in oklch, var(--muted) 60%, var(--border));
+      }
+      .segmented {
+        display: inline-flex;
+        padding: 3px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--surface);
+      }
+      .segmented button {
+        min-height: 44px;
+        border: 0;
+        border-radius: 9px;
+        background: transparent;
+        padding: 0 13px;
+        color: var(--muted);
+        font-weight: 650;
+      }
+      .segmented button:hover {
+        color: var(--fg);
+      }
+      .segmented button.selected {
+        background: var(--progress-bg);
+        color: color-mix(in oklch, var(--progress-accent) 80%, var(--fg));
+      }
+
+      .board-scroll {
+        min-width: 0;
+        overflow-x: auto;
+        padding: 2px 2px 10px;
+        scroll-snap-type: x proximity;
+      }
+      .kanban {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(300px, 1fr));
+        gap: 18px;
+        min-width: 1260px;
+        align-items: start;
+      }
+      .kanban-column {
+        min-height: 520px;
+        scroll-snap-align: start;
+        border-radius: var(--radius-lg);
+        padding: 16px;
+      }
+      .column-todo {
+        background: var(--todo-bg);
+      }
+      .column-progress {
+        background: var(--progress-bg);
+      }
+      .column-postponed {
+        background: var(--postponed-bg);
+      }
+      .column-done {
+        background: var(--done-bg);
+      }
+      .column-header {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        min-height: 42px;
+        margin-bottom: 12px;
+      }
+      .status-icon {
+        display: grid;
+        width: 30px;
+        height: 30px;
+        place-items: center;
+        border-radius: 9px;
+        background: var(--surface);
+      }
+      .column-todo .status-icon {
+        color: var(--todo-accent);
+      }
+      .column-progress .status-icon {
+        color: var(--progress-accent);
+      }
+      .column-postponed .status-icon {
+        color: var(--postponed-accent);
+      }
+      .column-done .status-icon {
+        color: var(--done-accent);
+      }
+      .column-header h2 {
+        font-size: 18px;
+        letter-spacing: -0.015em;
+      }
+      .column-count {
+        margin-left: auto;
+        min-width: 27px;
+        border-radius: 999px;
+        background: color-mix(in oklch, var(--surface) 76%, transparent);
+        padding: 3px 8px;
+        color: var(--muted);
+        font: 12px/1.7 var(--font-mono);
+        text-align: center;
+      }
+      .column-list {
+        display: grid;
+        gap: 13px;
+      }
+
+      .task-card {
+        position: relative;
+        min-height: 124px;
+        display: flex;
+        flex-direction: column;
+        gap: 11px;
+        border: 1px solid color-mix(in oklch, var(--border) 82%, transparent);
+        border-radius: 14px;
+        background: var(--surface);
+        padding: 16px;
+        box-shadow: var(--shadow-card);
+        cursor: pointer;
+        transition:
+          transform 180ms cubic-bezier(0.23, 1, 0.32, 1),
+          box-shadow 180ms cubic-bezier(0.23, 1, 0.32, 1),
+          border-color 180ms cubic-bezier(0.23, 1, 0.32, 1);
+      }
+      .task-card:hover {
+        transform: translateY(-2px);
+        border-color: var(--border-strong);
+        box-shadow: 0 9px 24px color-mix(in oklch, var(--fg) 10%, transparent);
+      }
+      .task-card.dragging {
+        opacity: 0.72;
+        transform: rotate(1deg);
+      }
+      .task-kicker {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .task-kicker .drag-handle {
+        margin-left: auto;
+        opacity: 0.55;
+      }
+      .task-title {
+        display: -webkit-box;
+        overflow: hidden;
+        color: var(--fg);
+        font-size: 16px;
+        font-weight: 720;
+        line-height: 1.35;
+        letter-spacing: -0.01em;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 3;
+      }
+      .task-desc {
+        display: -webkit-box;
+        overflow: hidden;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+      }
+      .task-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+      }
+      .tag {
+        min-height: 27px;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        border-radius: 999px;
+        background: var(--soft);
+        padding: 3px 9px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 650;
+      }
+      .tag-priority {
+        background: var(--todo-bg);
+        color: color-mix(in oklch, var(--todo-accent) 76%, var(--fg));
+      }
+      .tag-local {
+        background: var(--question-bg);
+        color: color-mix(in oklch, var(--question-accent) 72%, var(--fg));
+      }
+      .tag-sync {
+        background: var(--progress-bg);
+        color: color-mix(in oklch, var(--progress-accent) 74%, var(--fg));
+      }
+      .task-footer {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: auto;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .mini-avatar {
+        display: grid;
+        width: 26px;
+        height: 26px;
+        place-items: center;
+        border-radius: 50%;
+        background: var(--question-bg);
+        color: var(--question-accent);
+        font-size: 10px;
+        font-weight: 760;
+      }
+      .issue-number {
+        margin-left: auto;
+        font: 12px/1 var(--font-mono);
+      }
+      .pending-card {
+        border-style: dashed;
+      }
+      .pending-line {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: color-mix(in oklch, var(--todo-accent) 70%, var(--fg));
+        font-size: 12px;
+        font-weight: 650;
+      }
+      .question-shelf {
+        display: grid;
+        grid-template-columns: minmax(220px, 0.8fr) 1fr 1fr;
+        gap: 14px;
+        align-items: stretch;
+        margin-top: 18px;
+        border-radius: var(--radius-lg);
+        background: var(--question-bg);
+        padding: 15px;
+      }
+      .question-heading {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 5px;
+        padding: 8px 12px;
+      }
+      .question-heading h2 {
+        font-size: 18px;
+      }
+      .question-heading p {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .note-card {
+        min-height: 92px;
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
+        border: 1px solid color-mix(in oklch, var(--question-accent) 12%, var(--border));
+        border-radius: 13px;
+        background: var(--surface);
+        padding: 14px;
+        box-shadow: var(--shadow-card);
+        cursor: pointer;
+      }
+      .note-card:hover {
+        border-color: color-mix(in oklch, var(--question-accent) 32%, var(--border));
+      }
+      .note-card strong {
+        font-size: 14px;
+      }
+      .note-card p {
+        grid-column: 1 / -1;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .list-card {
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        background: var(--surface);
+        box-shadow: var(--shadow-card);
+      }
+      .group-heading {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 54px;
+        border-bottom: 1px solid var(--border);
+        padding: 0 18px;
+        background: var(--soft);
+      }
+      .group-heading h2 {
+        font-size: 17px;
+      }
+      .group-heading .count {
+        margin-left: auto;
+        color: var(--muted);
+        font: 12px/1 var(--font-mono);
+      }
+      .list-row {
+        min-height: 68px;
+        display: grid;
+        grid-template-columns: minmax(240px, 1fr) 120px 150px 100px;
+        align-items: center;
+        gap: 16px;
+        border-bottom: 1px solid var(--border);
+        padding: 10px 18px;
+        cursor: pointer;
+      }
+      .list-row:last-child {
+        border-bottom: 0;
+      }
+      .list-row:hover {
+        background: var(--soft);
+      }
+      .list-title strong,
+      .list-title small {
+        display: block;
+      }
+      .list-title strong {
+        font-size: 15px;
+      }
+      .list-title small {
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .status-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .status-label::before {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+        content: '';
+      }
+      .status-todo {
+        color: color-mix(in oklch, var(--todo-accent) 80%, var(--fg));
+      }
+      .status-progress {
+        color: color-mix(in oklch, var(--progress-accent) 80%, var(--fg));
+      }
+      .all-groups {
+        display: grid;
+        gap: 18px;
+      }
+      .all-board {
+        display: none;
+      }
+      .all-board.active {
+        display: block;
+      }
+      .all-list.hidden {
+        display: none;
+      }
+      .empty-state {
+        display: none;
+        min-height: 330px;
+        place-items: center;
+        border: 1px dashed var(--border-strong);
+        border-radius: var(--radius-lg);
+        background: var(--surface);
+        padding: 40px;
+        text-align: center;
+      }
+      .empty-state.visible {
+        display: grid;
+      }
+      .empty-state .empty-mark {
+        display: grid;
+        width: 58px;
+        height: 58px;
+        place-items: center;
+        border-radius: 18px;
+        background: var(--progress-bg);
+        color: var(--progress-accent);
+      }
+      .empty-state h2 {
+        margin-top: 16px;
+        font-size: 20px;
+      }
+      .empty-state p {
+        max-width: 44ch;
+        margin-top: 7px;
+        color: var(--muted);
+      }
+
+      .drawer-scrim {
+        position: fixed;
+        z-index: 49;
+        inset: 0;
+        visibility: hidden;
+        background: color-mix(in oklch, var(--fg) 18%, transparent);
+        opacity: 0;
+        transition:
+          opacity 140ms cubic-bezier(0.23, 1, 0.32, 1),
+          visibility 140ms;
+      }
+      .drawer-scrim.open {
+        visibility: visible;
+        opacity: 1;
+      }
+      .details-panel {
+        position: fixed;
+        z-index: 50;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: min(460px, 96vw);
+        overflow-y: auto;
+        border-left: 1px solid var(--border);
+        background: var(--surface);
+        box-shadow: var(--shadow-floating);
+        transform: translateX(102%);
+        transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1);
+      }
+      .details-panel.open {
+        transform: translateX(0);
+      }
+      .drawer-header {
+        position: sticky;
+        z-index: 2;
+        top: 0;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-height: 68px;
+        border-bottom: 1px solid var(--border);
+        background: color-mix(in oklch, var(--surface) 92%, transparent);
+        padding: 10px 14px 10px 22px;
+        backdrop-filter: blur(12px);
+      }
+      .drawer-header-copy {
+        min-width: 0;
+        flex: 1;
+      }
+      .drawer-header-copy span {
+        display: block;
+        color: var(--muted);
+        font: 12px/1.4 var(--font-mono);
+      }
+      .drawer-header-copy strong {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 15px;
+      }
+      .drawer-body {
+        display: grid;
+        gap: 16px;
+        padding: 20px 22px 96px;
+      }
+      .drawer-title {
+        width: 100%;
+        border: 0;
+        background: transparent;
+        padding: 0;
+        font-size: 23px;
+        font-weight: 740;
+        line-height: 1.28;
+        letter-spacing: -0.02em;
+      }
+      .drawer-title:focus-visible {
+        box-shadow: inset 0 -2px var(--accent);
+      }
+      .editor-section {
+        display: grid;
+        gap: 12px;
+        border-radius: 14px;
+        background: var(--soft);
+        padding: 15px;
+      }
+      .editor-section.status-section {
+        background: var(--progress-bg);
+      }
+      .editor-section.question-section {
+        background: var(--question-bg);
+      }
+      .editor-section h3 {
+        font-size: 14px;
+      }
+      .field-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .field {
+        display: grid;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 650;
+      }
+      .textarea {
+        min-height: 190px;
+        resize: vertical;
+        line-height: 1.55;
+      }
+      .checklist {
+        display: grid;
+        gap: 9px;
+      }
+      .check-row {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        min-height: 44px;
+      }
+      .check-row input {
+        width: 18px;
+        height: 18px;
+        accent-color: var(--accent);
+      }
+      .sync-card {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        border-radius: 12px;
+        background: var(--done-bg);
+        padding: 12px;
+        color: color-mix(in oklch, var(--done-accent) 78%, var(--fg));
+        font-size: 13px;
+      }
+      .drawer-actions {
+        position: sticky;
+        z-index: 2;
+        bottom: 0;
+        display: flex;
+        gap: 9px;
+        border-top: 1px solid var(--border);
+        background: color-mix(in oklch, var(--surface) 94%, transparent);
+        padding: 12px 22px;
+        backdrop-filter: blur(12px);
+      }
+      .drawer-actions .button-primary {
+        margin-left: auto;
+      }
+
+      .modal-backdrop,
+      .auth-screen {
+        position: fixed;
+        z-index: 80;
+        inset: 0;
+        visibility: hidden;
+        display: grid;
+        place-items: center;
+        overflow-y: auto;
+        background: color-mix(in oklch, var(--fg) 30%, transparent);
+        padding: 24px;
+        opacity: 0;
+        backdrop-filter: blur(5px);
+        transition:
+          opacity 140ms cubic-bezier(0.23, 1, 0.32, 1),
+          visibility 140ms;
+      }
+      .modal-backdrop.open,
+      .auth-screen.open {
+        visibility: visible;
+        opacity: 1;
+      }
+      .modal {
+        width: min(620px, 100%);
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        background: var(--surface);
+        box-shadow: var(--shadow-floating);
+        transform: translateY(8px) scale(0.98);
+        transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1);
+      }
+      .modal-backdrop.open .modal,
+      .auth-screen.open .auth-card {
+        transform: translateY(0) scale(1);
+      }
+      .modal-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 66px;
+        border-bottom: 1px solid var(--border);
+        padding: 10px 14px 10px 22px;
+      }
+      .modal-header h2 {
+        font-size: 19px;
+      }
+      .modal-body {
+        display: grid;
+        gap: 14px;
+        padding: 20px 22px;
+      }
+      .modal-footer {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        border-top: 1px solid var(--border);
+        padding: 12px 22px;
+      }
+      .modal-footer .hint {
+        margin-right: auto;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .labels {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+      }
+      .label-chip {
+        min-height: 44px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--surface);
+        padding: 0 12px;
+        color: var(--muted);
+      }
+      .label-chip:hover {
+        border-color: var(--border-strong);
+        background: var(--soft);
+        color: var(--fg);
+      }
+      .label-chip.selected {
+        border-color: color-mix(in oklch, var(--accent) 42%, var(--border));
+        background: var(--progress-bg);
+        color: color-mix(in oklch, var(--accent) 78%, var(--fg));
+      }
+      .auth-screen {
+        background: var(--bg);
+      }
+      .auth-card {
+        width: min(460px, 100%);
+        border: 1px solid var(--border);
+        border-radius: 22px;
+        background: var(--surface);
+        padding: 34px;
+        box-shadow: var(--shadow-card);
+        text-align: center;
+        transform: translateY(8px) scale(0.98);
+        transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1);
+      }
+      .auth-logo {
+        display: grid;
+        width: 58px;
+        height: 58px;
+        margin: 0 auto 18px;
+        place-items: center;
+        border-radius: 18px;
+        background: var(--progress-bg);
+        color: var(--progress-accent);
+      }
+      .auth-card h1 {
+        font-size: 28px;
+      }
+      .auth-card p {
+        margin: 10px auto 24px;
+        color: var(--muted);
+      }
+      .auth-note {
+        margin-top: 16px !important;
+        font-size: 12px;
+      }
+      .toast {
+        position: fixed;
+        z-index: 120;
+        right: 22px;
+        bottom: 22px;
+        max-width: 360px;
+        visibility: hidden;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        border: 1px solid color-mix(in oklch, var(--done-accent) 24%, var(--border));
+        border-radius: 13px;
+        background: var(--surface);
+        padding: 13px 15px;
+        box-shadow: var(--shadow-floating);
+        color: var(--fg);
+        opacity: 0;
+        transform: translateY(10px);
+        transition:
+          opacity 200ms cubic-bezier(0.23, 1, 0.32, 1),
+          transform 200ms cubic-bezier(0.23, 1, 0.32, 1),
+          visibility 200ms;
+      }
+      .toast.show {
+        visibility: visible;
+        opacity: 1;
+        transform: translateY(0);
+      }
+      .toast .icon {
+        color: var(--done-accent);
+      }
+
+      @media (max-width: 1180px) {
+        :root {
+          --sidebar-width: 248px;
+        }
+        .screen {
+          padding-inline: 22px;
+        }
+        .header-actions .optional {
+          display: none;
+        }
+        .question-shelf {
+          grid-template-columns: minmax(200px, 0.75fr) 1fr;
+        }
+        .question-shelf .note-card:last-child {
+          grid-column: 2;
+        }
+      }
+      @media (max-width: 820px) {
+        body {
+          overflow: hidden;
+        }
+        .app-shell {
+          grid-template-columns: 1fr;
+        }
+        .sidebar {
+          position: fixed;
+          inset: 0 auto 0 0;
+          width: min(286px, 86vw);
+          box-shadow: var(--shadow-floating);
+          transform: translateX(-103%);
+          transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1);
+        }
+        .sidebar.open {
+          transform: translateX(0);
+        }
+        .mobile-menu {
+          display: grid;
+          flex: 0 0 46px;
+        }
+        .screen {
+          padding: 22px 16px 60px;
+        }
+        .screen-header {
+          align-items: flex-start;
+        }
+        .screen-meta {
+          max-width: 52ch;
+        }
+        .toolbar {
+          flex-wrap: wrap;
+        }
+        .search {
+          max-width: none;
+          flex-basis: 100%;
+        }
+        .kanban {
+          grid-template-columns: repeat(4, minmax(82vw, 340px));
+          min-width: max-content;
+        }
+        .question-shelf {
+          grid-template-columns: 1fr;
+        }
+        .question-shelf .note-card:last-child {
+          grid-column: auto;
+        }
+        .list-row {
+          grid-template-columns: minmax(180px, 1fr) 120px;
+        }
+        .list-row > :nth-child(3),
+        .list-row > :nth-child(4) {
+          display: none;
+        }
+        .drawer-scrim.open {
+          visibility: visible;
+        }
+      }
+      @media (max-width: 560px) {
+        .screen-header {
+          display: grid;
+        }
+        .screen-header .header-actions {
+          width: 100%;
+        }
+        .screen-header .header-actions .button-primary {
+          flex: 1;
+        }
+        .repository-sync {
+          align-items: flex-start;
+        }
+        .toolbar .button span,
+        .sync-action span {
+          display: none;
+        }
+        .segmented {
+          margin-left: 0;
+        }
+        .field-grid {
+          grid-template-columns: 1fr;
+        }
+        .details-panel {
+          width: 100vw;
+        }
+        .modal-backdrop {
+          padding: 10px;
+        }
+        .modal-footer {
+          flex-wrap: wrap;
+        }
+        .modal-footer .hint {
+          width: 100%;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          transition-duration: 0.01ms !important;
+          animation-duration: 0.01ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-shell" data-od-id="app-shell">
+      <aside class="sidebar" id="sidebar" data-od-id="sidebar">
+        <div class="brand" data-od-id="brand">
+          <span class="brand-mark"
+            ><svg class="icon" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="7"></circle>
+              <path d="M12 5v4m0 6v4M5 12h4m6 0h4"></path></svg
+          ></span>
+          KitsuFlow
+        </div>
+        <nav class="sidebar-nav" aria-label="Основная навигация">
+          <button class="nav-item" data-view="all" data-od-id="nav-all-tasks">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"></path></svg>
+            <span>Все задачи</span><span class="count">5</span>
+          </button>
+          <div class="nav-heading">
+            <span>Репозитории</span
+            ><button
+              class="icon-button"
+              title="Закрепить репозиторий"
+              aria-label="Закрепить репозиторий"
+            >
+              <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></svg>
+            </button>
+          </div>
+          <button class="repo-item active" data-view="repo" data-od-id="repo-kotokitsu">
+            <span class="repo-avatar">K</span><span class="repo-name">KotoKitsu</span
+            ><span class="count">5</span>
+          </button>
+          <button class="repo-item" data-view="repo" data-od-id="repo-kitsuflow">
+            <span class="repo-avatar">F</span><span class="repo-name">KitsuFlow</span
+            ><span class="count">2</span>
+          </button>
+        </nav>
+        <div class="account" data-od-id="account-block">
+          <div class="profile">
+            <span class="avatar">M</span>
+            <span><strong>Mootxed</strong><small>@mootxed</small></span>
+            <span class="sync-dot" title="Синхронизация завершена"></span>
+          </div>
+          <div class="account-actions">
+            <button class="button button-wide sync-button" data-od-id="sync-sidebar">
+              <svg class="icon icon-sm" viewBox="0 0 24 24">
+                <path d="M20 7h-6V1M4 17h6v6M20 7a8 8 0 0 0-14-2M4 17a8 8 0 0 0 14 2"></path></svg
+              >Синхронизировать
+            </button>
+            <button class="icon-button logout-button" title="Выйти" aria-label="Выйти">
+              <svg class="icon" viewBox="0 0 24 24">
+                <path d="M10 17l5-5-5-5m5 5H3m10-9h6a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-6"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      <div class="main-shell">
+        <div class="tabbar" role="tablist" aria-label="Открытые вкладки" data-od-id="tabbar">
+          <button class="icon-button mobile-menu" id="mobile-menu" aria-label="Открыть навигацию">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"></path></svg>
+          </button>
+          <div class="tab" role="tab" data-view="all" tabindex="0" aria-selected="false">
+            <span class="tab-label">Все задачи</span
+            ><button class="tab-close" aria-label="Закрыть вкладку Все задачи">
+              <svg class="icon icon-sm" viewBox="0 0 24 24">
+                <path d="M6 6l12 12M18 6L6 18"></path>
+              </svg>
+            </button>
+          </div>
+          <div class="tab active" role="tab" data-view="repo" tabindex="0" aria-selected="true">
+            <span class="tab-label">KotoKitsu</span
+            ><button class="tab-close" aria-label="Закрыть вкладку KotoKitsu">
+              <svg class="icon icon-sm" viewBox="0 0 24 24">
+                <path d="M6 6l12 12M18 6L6 18"></path>
+              </svg>
+            </button>
+          </div>
+          <button class="new-tab" aria-label="Новая вкладка">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></svg>
+          </button>
+        </div>
+
+        <main class="workspace" id="content">
+          <section class="screen active" id="repo-screen" data-od-id="repository-screen">
+            <header class="screen-header" data-od-id="repository-header">
+              <div>
+                <p class="eyebrow">Репозиторий</p>
+                <h1 data-od-id="repository-title">KotoKitsu</h1>
+                <div class="repository-context">
+                  <p class="screen-meta">
+                    <span>mootxed/KotoKitsu</span><span class="meta-divider">•</span
+                    ><span>33 задачи</span>
+                  </p>
+                  <div class="repository-sync" data-od-id="repository-sync-status">
+                    <span class="repository-sync-state"
+                      ><span class="sync-dot"></span
+                      ><strong id="sync-copy">Все изменения сохранены</strong></span
+                    >
+                    <span class="repository-sync-time">обновлено только что</span>
+                    <span class="pending-summary"
+                      ><svg class="icon icon-sm" viewBox="0 0 24 24">
+                        <path d="M12 7v5l3 2"></path>
+                        <circle cx="12" cy="12" r="9"></circle></svg
+                      >1 задача ожидает отправки</span
+                    >
+                  </div>
+                </div>
+              </div>
+              <div class="header-actions">
+                <button class="button sync-button" data-od-id="refresh-repository">
+                  <svg class="icon icon-sm" viewBox="0 0 24 24">
+                    <path
+                      d="M20 7h-6V1M4 17h6v6M20 7a8 8 0 0 0-14-2M4 17a8 8 0 0 0 14 2"
+                    ></path></svg
+                  >Обновить
+                </button>
+                <button class="button optional">
+                  <svg class="icon icon-sm" viewBox="0 0 24 24">
+                    <path d="M4 5h16M7 12h10M10 19h4"></path></svg
+                  >Фильтры
+                </button>
+                <button class="button button-primary open-create" data-od-id="create-task-primary">
+                  <svg class="icon icon-sm" viewBox="0 0 24 24">
+                    <path d="M12 5v14M5 12h14"></path></svg
+                  >Создать задачу
+                </button>
+              </div>
+            </header>
+            <div class="toolbar" data-od-id="repository-toolbar">
+              <label class="search"
+                ><span class="sr-only">Поиск по задачам</span
+                ><svg class="icon" viewBox="0 0 24 24">
+                  <circle cx="11" cy="11" r="7"></circle>
+                  <path d="M16 16l5 5"></path></svg
+                ><input class="input board-search" type="search" placeholder="Поиск по задачам"
+              /></label>
+              <button class="button">
+                <svg class="icon icon-sm" viewBox="0 0 24 24">
+                  <path d="M16 21v-2a4 4 0 0 0-8 0v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8"></path></svg
+                ><span>Исполнитель</span>
+              </button>
+              <button class="button">
+                <svg class="icon icon-sm" viewBox="0 0 24 24">
+                  <path d="M20 12H4m6-6L4 12l6 6"></path></svg
+                ><span>Приоритет</span>
+              </button>
+            </div>
+
+            <div class="board-scroll" data-od-id="kanban-board">
+              <div class="kanban">
+                <section class="kanban-column column-todo" data-od-id="column-todo">
+                  <header class="column-header">
+                    <span class="status-icon"
+                      ><svg class="icon icon-sm" viewBox="0 0 24 24">
+                        <circle cx="12" cy="12" r="8"></circle></svg
+                    ></span>
+                    <h2>Нужно сделать</h2>
+                    <span class="column-count">5</span>
+                  </header>
+                  <div class="column-list" id="todo-list">
+                    <article
+                      class="task-card"
+                      tabindex="0"
+                      data-task-title="Добавить просмотр системных логов"
+                      data-task-number="#36"
+                      data-task-kind="issue"
+                      data-od-id="task-card-logs"
+                    >
+                      <div class="task-kicker">
+                        <span>Режим разработчика</span
+                        ><span class="drag-handle" title="Перетащить"
+                          ><svg class="icon icon-sm" viewBox="0 0 24 24">
+                            <circle cx="9" cy="7" r="1"></circle>
+                            <circle cx="15" cy="7" r="1"></circle>
+                            <circle cx="9" cy="12" r="1"></circle>
+                            <circle cx="15" cy="12" r="1"></circle>
+                            <circle cx="9" cy="17" r="1"></circle>
+                            <circle cx="15" cy="17" r="1"></circle></svg
+                        ></span>
+                      </div>
+                      <h3 class="task-title">
+                        Добавить просмотр системных логов и возможность скопировать отчёт
+                      </h3>
+                      <p class="task-desc">
+                        Собрать диагностическую информацию в одном понятном экране.
+                      </p>
+                      <div class="task-tags">
+                        <span class="tag">Улучшение</span
+                        ><span class="tag tag-priority">Средний</span>
+                      </div>
+                      <footer class="task-footer">
+                        <span class="mini-avatar">M</span><span>Mootxed</span
+                        ><span class="issue-number">#36</span>
+                      </footer>
+                    </article>
+                    <article
+                      class="task-card pending-card"
+                      tabindex="0"
+                      data-task-title="Проверить OAuth после обновления Worker"
+                      data-task-number="Локальный черновик"
+                      data-task-kind="pending"
+                      data-od-id="task-card-pending"
+                    >
+                      <div class="pending-line">
+                        <svg class="icon icon-sm" viewBox="0 0 24 24">
+                          <path d="M12 7v5l3 2"></path>
+                          <circle cx="12" cy="12" r="9"></circle></svg
+                        >Ожидает синхронизации
+                      </div>
+                      <h3 class="task-title">Проверить OAuth после обновления Worker</h3>
+                      <p class="task-desc">
+                        Задача уже сохранена на устройстве и будет отправлена при подключении.
+                      </p>
+                      <div class="task-tags">
+                        <span class="tag">Баг</span><span class="tag tag-priority">Высокий</span>
+                      </div>
+                      <footer class="task-footer">
+                        <span class="tag tag-sync">Отправится в GitHub</span>
+                      </footer>
+                    </article>
+                  </div>
+                </section>
+
+                <section class="kanban-column column-progress" data-od-id="column-progress">
+                  <header class="column-header">
+                    <span class="status-icon"
+                      ><svg class="icon icon-sm" viewBox="0 0 24 24">
+                        <circle cx="12" cy="12" r="8"></circle>
+                        <path d="M12 8v8"></path></svg
+                    ></span>
+                    <h2>В работе</h2>
+                    <span class="column-count">2</span>
+                  </header>
+                  <div class="column-list">
+                    <article
+                      class="task-card"
+                      tabindex="0"
+                      data-task-title="Сделать обновление токена прозрачным"
+                      data-task-number="#41"
+                      data-task-kind="issue"
+                      data-od-id="task-card-token-refresh"
+                    >
+                      <div class="task-kicker">
+                        <span>GitHub OAuth</span
+                        ><span class="drag-handle"
+                          ><svg class="icon icon-sm" viewBox="0 0 24 24">
+                            <circle cx="9" cy="7" r="1"></circle>
+                            <circle cx="15" cy="7" r="1"></circle>
+                            <circle cx="9" cy="12" r="1"></circle>
+                            <circle cx="15" cy="12" r="1"></circle>
+                            <circle cx="9" cy="17" r="1"></circle>
+                            <circle cx="15" cy="17" r="1"></circle></svg
+                        ></span>
+                      </div>
+                      <h3 class="task-title">
+                        Сделать обновление токена прозрачным для пользователя
+                      </h3>
+                      <p class="task-desc">
+                        Показывать понятное состояние сессии без технических терминов.
+                      </p>
+                      <div class="task-tags">
+                        <span class="tag">Улучшение</span
+                        ><span class="tag tag-priority">Высокий</span>
+                      </div>
+                      <footer class="task-footer">
+                        <span class="mini-avatar">M</span><span>Mootxed</span
+                        ><span class="issue-number">#41</span>
+                      </footer>
+                    </article>
+                    <article
+                      class="task-card"
+                      tabindex="0"
+                      data-task-title="Улучшить восстановление вкладок"
+                      data-task-number="#28"
+                      data-task-kind="issue"
+                      data-od-id="task-card-tabs"
+                    >
+                      <div class="task-kicker"><span>Рабочее пространство</span></div>
+                      <h3 class="task-title">Улучшить восстановление вкладок после перезапуска</h3>
+                      <p class="task-desc">
+                        Сохранять активную сущность и порядок вкладок в IndexedDB.
+                      </p>
+                      <div class="task-tags">
+                        <span class="tag">Идея</span><span class="tag tag-priority">Средний</span>
+                      </div>
+                      <footer class="task-footer">
+                        <span class="mini-avatar">M</span><span>Mootxed</span
+                        ><span class="issue-number">#28</span>
+                      </footer>
+                    </article>
+                  </div>
+                </section>
+
+                <section class="kanban-column column-postponed" data-od-id="column-postponed">
+                  <header class="column-header">
+                    <span class="status-icon"
+                      ><svg class="icon icon-sm" viewBox="0 0 24 24">
+                        <path d="M8 5v14M16 5v14"></path></svg
+                    ></span>
+                    <h2>Отложено</h2>
+                    <span class="column-count">1</span>
+                  </header>
+                  <div class="column-list">
+                    <article
+                      class="task-card"
+                      tabindex="0"
+                      data-task-title="Добавить массовое редактирование"
+                      data-task-number="#17"
+                      data-task-kind="issue"
+                      data-od-id="task-card-bulk-edit"
+                    >
+                      <div class="task-kicker"><span>Планирование</span></div>
+                      <h3 class="task-title">
+                        Добавить массовое редактирование меток и исполнителей
+                      </h3>
+                      <p class="task-desc">
+                        Вернуться после стабилизации основного сценария доски.
+                      </p>
+                      <div class="task-tags">
+                        <span class="tag">Идея</span><span class="tag tag-priority">Низкий</span>
+                      </div>
+                      <footer class="task-footer">
+                        <span class="mini-avatar">M</span><span>Mootxed</span
+                        ><span class="issue-number">#17</span>
+                      </footer>
+                    </article>
+                  </div>
+                </section>
+
+                <section class="kanban-column column-done" data-od-id="column-done">
+                  <header class="column-header">
+                    <span class="status-icon"
+                      ><svg class="icon icon-sm" viewBox="0 0 24 24">
+                        <path d="M5 12l4 4L19 6"></path></svg
+                    ></span>
+                    <h2>Готово</h2>
+                    <span class="column-count">2</span>
+                  </header>
+                  <div class="column-list">
+                    <article
+                      class="task-card"
+                      tabindex="0"
+                      data-task-title="Защитить токены авторизации"
+                      data-task-number="#12"
+                      data-task-kind="issue"
+                      data-od-id="task-card-session-security"
+                    >
+                      <div class="task-kicker"><span>Безопасность</span></div>
+                      <h3 class="task-title">Хранить токены авторизации только в текущей сессии</h3>
+                      <p class="task-desc">
+                        Токены не попадают в IndexedDB или постоянное хранилище браузера.
+                      </p>
+                      <div class="task-tags">
+                        <span class="tag">Документация</span
+                        ><span class="tag tag-priority">Высокий</span>
+                      </div>
+                      <footer class="task-footer">
+                        <span class="mini-avatar">M</span><span>Mootxed</span
+                        ><span class="issue-number">#12</span>
+                      </footer>
+                    </article>
+                  </div>
+                </section>
+              </div>
+            </div>
+
+            <section class="question-shelf" data-od-id="question-notes">
+              <div class="question-heading">
+                <p class="eyebrow">Локальные заметки</p>
+                <h2>Под вопросом</h2>
+                <p>Идеи, которые ещё рано публиковать в GitHub.</p>
+              </div>
+              <article
+                class="note-card"
+                tabindex="0"
+                data-task-title="Нужен ли календарный вид?"
+                data-task-number="Локально"
+                data-task-kind="note"
+                data-od-id="note-card-calendar"
+              >
+                <strong>Нужен ли календарный вид?</strong
+                ><span class="tag tag-local">Локально</span>
+                <p>Проверить сценарии с дедлайнами перед созданием Issue.</p>
+              </article>
+              <article
+                class="note-card"
+                tabindex="0"
+                data-task-title="Сгруппировать уведомления синхронизации"
+                data-task-number="Локально"
+                data-task-kind="note"
+                data-od-id="note-card-sync"
+              >
+                <strong>Сгруппировать уведомления синхронизации</strong
+                ><span class="tag tag-local">Локально</span>
+                <p>Подумать, какие ошибки действительно требуют внимания.</p>
+              </article>
+            </section>
+            <div class="empty-state" id="repo-empty" data-od-id="repository-empty-state">
+              <div>
+                <span class="empty-mark"
+                  ><svg class="icon" viewBox="0 0 24 24">
+                    <circle cx="11" cy="11" r="7"></circle>
+                    <path d="M16 16l5 5"></path></svg
+                ></span>
+                <h2>Задачи не найдены</h2>
+                <p>Попробуйте изменить запрос или сбросить фильтры.</p>
+              </div>
+            </div>
+          </section>
+
+          <section class="screen" id="all-screen" data-od-id="all-tasks-screen">
+            <header class="screen-header" data-od-id="all-tasks-header">
+              <div>
+                <p class="eyebrow">Рабочее пространство</p>
+                <h1>Все задачи</h1>
+                <p class="screen-meta">
+                  Активная работа из закреплённых репозиториев и локальных заметок
+                </p>
+              </div>
+              <div class="header-actions">
+                <button class="button button-primary open-create" data-od-id="create-task-all">
+                  <svg class="icon icon-sm" viewBox="0 0 24 24">
+                    <path d="M12 5v14M5 12h14"></path></svg
+                  >Создать задачу
+                </button>
+              </div>
+            </header>
+            <div class="toolbar" data-od-id="all-tasks-filters">
+              <label class="search"
+                ><span class="sr-only">Поиск по всем задачам</span
+                ><svg class="icon" viewBox="0 0 24 24">
+                  <circle cx="11" cy="11" r="7"></circle>
+                  <path d="M16 16l5 5"></path></svg
+                ><input class="input all-search" type="search" placeholder="Поиск по всем задачам"
+              /></label>
+              <button class="button optional">Репозиторий</button
+              ><button class="button optional">Статус</button
+              ><button class="button optional">Приоритет</button>
+              <div class="segmented" data-od-id="view-switch">
+                <button class="selected" data-layout="list">Список</button
+                ><button data-layout="board">Доска</button>
+              </div>
+            </div>
+            <div class="all-list all-groups" id="all-list">
+              <section class="list-card" data-od-id="all-group-kotokitsu">
+                <header class="group-heading">
+                  <span class="repo-avatar">K</span>
+                  <h2>KotoKitsu</h2>
+                  <span class="count">3 задачи</span>
+                </header>
+                <div
+                  class="list-row"
+                  tabindex="0"
+                  data-task-title="Режим разработчика"
+                  data-task-number="#36"
+                  data-task-kind="issue"
+                >
+                  <div class="list-title">
+                    <strong>Режим разработчика</strong><small>#36 · Улучшение</small>
+                  </div>
+                  <span class="tag tag-priority">Средний</span
+                  ><span class="status-label status-todo">Нужно сделать</span
+                  ><span class="mini-avatar">M</span>
+                </div>
+                <div
+                  class="list-row"
+                  tabindex="0"
+                  data-task-title="RAG для контекста проекта"
+                  data-task-number="#27"
+                  data-task-kind="issue"
+                >
+                  <div class="list-title">
+                    <strong>RAG для контекста проекта</strong><small>#27 · Идея</small>
+                  </div>
+                  <span class="tag tag-priority">Низкий</span
+                  ><span class="status-label status-todo">Нужно сделать</span
+                  ><span class="mini-avatar">M</span>
+                </div>
+                <div
+                  class="list-row"
+                  tabindex="0"
+                  data-task-title="Восстановление вкладок"
+                  data-task-number="#28"
+                  data-task-kind="issue"
+                >
+                  <div class="list-title">
+                    <strong>Восстановление вкладок</strong><small>#28 · Улучшение</small>
+                  </div>
+                  <span class="tag tag-priority">Средний</span
+                  ><span class="status-label status-progress">В работе</span
+                  ><span class="mini-avatar">M</span>
+                </div>
+              </section>
+              <section class="list-card" data-od-id="all-group-kitsuflow">
+                <header class="group-heading">
+                  <span class="repo-avatar">F</span>
+                  <h2>KitsuFlow</h2>
+                  <span class="count">2 задачи</span>
+                </header>
+                <div
+                  class="list-row"
+                  tabindex="0"
+                  data-task-title="Проверить OAuth"
+                  data-task-number="#41"
+                  data-task-kind="issue"
+                >
+                  <div class="list-title">
+                    <strong>Проверить OAuth</strong><small>#41 · Баг</small>
+                  </div>
+                  <span class="tag tag-priority">Высокий</span
+                  ><span class="status-label status-progress">В работе</span
+                  ><span class="mini-avatar">M</span>
+                </div>
+                <div
+                  class="list-row"
+                  tabindex="0"
+                  data-task-title="Подготовить документацию Pages"
+                  data-task-number="#32"
+                  data-task-kind="issue"
+                >
+                  <div class="list-title">
+                    <strong>Подготовить документацию Pages</strong><small>#32 · Документация</small>
+                  </div>
+                  <span class="tag tag-priority">Средний</span
+                  ><span class="status-label status-todo">Нужно сделать</span
+                  ><span class="mini-avatar">M</span>
+                </div>
+              </section>
+            </div>
+            <div class="all-board" id="all-board">
+              <div class="board-scroll">
+                <div class="kanban">
+                  <section class="kanban-column column-todo">
+                    <header class="column-header">
+                      <span class="status-icon"
+                        ><svg class="icon icon-sm" viewBox="0 0 24 24">
+                          <circle cx="12" cy="12" r="8"></circle></svg
+                      ></span>
+                      <h2>Нужно сделать</h2>
+                      <span class="column-count">3</span>
+                    </header>
+                    <div class="column-list">
+                      <article
+                        class="task-card"
+                        tabindex="0"
+                        data-task-title="Режим разработчика"
+                        data-task-number="#36"
+                        data-task-kind="issue"
+                      >
+                        <div class="task-kicker">KotoKitsu</div>
+                        <h3 class="task-title">Режим разработчика</h3>
+                        <div class="task-tags"><span class="tag tag-priority">Средний</span></div>
+                      </article>
+                    </div>
+                  </section>
+                  <section class="kanban-column column-progress">
+                    <header class="column-header">
+                      <span class="status-icon"
+                        ><svg class="icon icon-sm" viewBox="0 0 24 24">
+                          <circle cx="12" cy="12" r="8"></circle>
+                          <path d="M12 8v8"></path></svg
+                      ></span>
+                      <h2>В работе</h2>
+                      <span class="column-count">2</span>
+                    </header>
+                    <div class="column-list">
+                      <article
+                        class="task-card"
+                        tabindex="0"
+                        data-task-title="Проверить OAuth"
+                        data-task-number="#41"
+                        data-task-kind="issue"
+                      >
+                        <div class="task-kicker">KitsuFlow</div>
+                        <h3 class="task-title">Проверить OAuth</h3>
+                        <div class="task-tags"><span class="tag tag-priority">Высокий</span></div>
+                      </article>
+                    </div>
+                  </section>
+                  <section class="kanban-column column-postponed">
+                    <header class="column-header">
+                      <span class="status-icon"
+                        ><svg class="icon icon-sm" viewBox="0 0 24 24">
+                          <path d="M8 5v14M16 5v14"></path></svg
+                      ></span>
+                      <h2>Отложено</h2>
+                      <span class="column-count">0</span>
+                    </header>
+                  </section>
+                  <section class="kanban-column column-done">
+                    <header class="column-header">
+                      <span class="status-icon"
+                        ><svg class="icon icon-sm" viewBox="0 0 24 24">
+                          <path d="M5 12l4 4L19 6"></path></svg
+                      ></span>
+                      <h2>Готово</h2>
+                      <span class="column-count">0</span>
+                    </header>
+                  </section>
+                </div>
+              </div>
+            </div>
+            <div class="empty-state" id="all-empty" data-od-id="all-tasks-empty-state">
+              <div>
+                <span class="empty-mark"
+                  ><svg class="icon" viewBox="0 0 24 24">
+                    <path d="M4 6h16M4 12h16M4 18h10"></path></svg
+                ></span>
+                <h2>В активной работе пока пусто</h2>
+                <p>
+                  Создайте локальную заметку или закрепите репозиторий, чтобы собрать задачи здесь.
+                </p>
+                <button class="button button-primary open-create" style="margin-top: 18px">
+                  Создать первую задачу
+                </button>
+              </div>
+            </div>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <div class="drawer-scrim" id="drawer-scrim"></div>
+    <aside
+      class="details-panel"
+      id="details-panel"
+      aria-label="Редактор задачи"
+      data-od-id="task-details-panel"
+    >
+      <header class="drawer-header">
+        <div class="drawer-header-copy">
+          <span id="drawer-number">#36</span><strong id="drawer-repo">mootxed/KotoKitsu</strong>
+        </div>
+        <button class="icon-button" id="drawer-close" aria-label="Закрыть панель">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+        </button>
+      </header>
+      <div class="drawer-body">
+        <input
+          class="drawer-title"
+          id="drawer-title"
+          value="Добавить просмотр системных логов"
+          aria-label="Название задачи"
+        />
+        <section class="editor-section status-section" data-od-id="details-main-fields">
+          <h3>Основное</h3>
+          <div class="field-grid">
+            <label class="field"
+              >Статус<select class="select">
+                <option>Нужно сделать</option>
+                <option>В работе</option>
+                <option>Отложено</option>
+                <option>Готово</option>
+              </select></label
+            ><label class="field"
+              >Приоритет<select class="select">
+                <option>Без приоритета</option>
+                <option>Низкий</option>
+                <option selected="">Средний</option>
+                <option>Высокий</option>
+                <option>Срочный</option>
+              </select></label
+            >
+          </div>
+          <label class="field"
+            >Репозиторий<input class="input" value="mootxed/KotoKitsu" readonly=""
+          /></label>
+        </section>
+        <section class="editor-section" data-od-id="details-labels">
+          <h3>Метки и участники</h3>
+          <div class="labels">
+            <button class="label-chip selected">Улучшение</button
+            ><button class="label-chip">Баг</button><button class="label-chip">Документация</button
+            ><button class="label-chip">Идея</button>
+          </div>
+          <label class="field"
+            >Исполнители<select class="select">
+              <option>Mootxed (@mootxed)</option>
+              <option>Без исполнителя</option>
+            </select></label
+          >
+        </section>
+        <label class="field" data-od-id="details-description"
+          >Описание<textarea class="textarea">
+Добавить просмотр системных логов и возможность скопировать диагностический отчёт. Интерфейс должен объяснять, какие данные попадут в буфер обмена.</textarea>
+        </label>
+        <section class="editor-section" data-od-id="details-checklist">
+          <h3>Чек-лист</h3>
+          <div class="checklist">
+            <label class="check-row"
+              ><input type="checkbox" checked="" />Собрать системную информацию</label
+            ><label class="check-row"><input type="checkbox" />Добавить копирование отчёта</label
+            ><label class="check-row"><input type="checkbox" />Проверить режим офлайн</label>
+          </div>
+        </section>
+        <div class="sync-card" id="drawer-sync">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M5 12l4 4L19 6"></path></svg
+          ><span><strong>Сохранено</strong><br />Изменения синхронизированы с GitHub</span>
+        </div>
+      </div>
+      <footer class="drawer-actions">
+        <button class="button" id="github-action">
+          <svg class="icon icon-sm" viewBox="0 0 24 24">
+            <path
+              d="M14 4h6v6M20 4l-9 9M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"
+            ></path></svg
+          >Открыть на GitHub</button
+        ><button class="button button-primary" id="save-task">Сохранить</button>
+      </footer>
+    </aside>
+
+    <div
+      class="modal-backdrop"
+      id="create-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="create-title"
+      data-od-id="quick-create-modal"
+    >
+      <form class="modal" id="create-form">
+        <header class="modal-header">
+          <h2 id="create-title">Новая задача</h2>
+          <button class="icon-button modal-close" type="button" aria-label="Закрыть">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+          </button>
+        </header>
+        <div class="modal-body">
+          <label class="field"
+            >Название<input
+              class="input"
+              id="new-title"
+              required=""
+              placeholder="Что нужно сделать?" /></label
+          ><label class="field"
+            >Описание<textarea
+              class="textarea"
+              style="min-height: 120px"
+              placeholder="Контекст, ожидаемый результат или Markdown"
+            ></textarea>
+          </label>
+          <div class="field-grid">
+            <label class="field"
+              >Где сохранить<select class="select" id="create-place">
+                <option value="issue">GitHub Issue · KotoKitsu</option>
+                <option value="note">Локальная заметка</option>
+              </select></label
+            ><label class="field"
+              >Приоритет<select class="select">
+                <option>Без приоритета</option>
+                <option>Низкий</option>
+                <option selected="">Средний</option>
+                <option>Высокий</option>
+                <option>Срочный</option>
+              </select></label
+            >
+          </div>
+          <label class="field"
+            >Метки
+            <div class="labels">
+              <button type="button" class="label-chip selected">Улучшение</button
+              ><button type="button" class="label-chip">Баг</button
+              ><button type="button" class="label-chip">Документация</button
+              ><button type="button" class="label-chip">Идея</button>
+            </div></label
+          >
+        </div>
+        <footer class="modal-footer">
+          <span class="hint">Ctrl + Enter — создать</span
+          ><button class="button modal-close" type="button">Отмена</button
+          ><button class="button button-primary" type="submit">Создать задачу</button>
+        </footer>
+      </form>
+    </div>
+
+    <section class="auth-screen" id="auth-screen" data-od-id="auth-screen">
+      <div class="auth-card">
+        <span class="auth-logo"
+          ><svg class="icon" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="7"></circle>
+            <path d="M12 5v4m0 6v4M5 12h4m6 0h4"></path></svg
+        ></span>
+        <h1>С возвращением</h1>
+        <p>
+          Подключите GitHub, чтобы увидеть Issues. Локальные заметки останутся на этом устройстве.
+        </p>
+        <button class="button button-primary button-wide" id="login-button">
+          <svg class="icon" viewBox="0 0 24 24">
+            <path
+              d="M9 19c-4 1.2-4-2-6-2.5M15 22v-3.2a2.8 2.8 0 0 0-.8-2.2c2.7-.3 5.5-1.3 5.5-6a4.7 4.7 0 0 0-1.3-3.3 4.4 4.4 0 0 0-.1-3.3s-1-.3-3.4 1.3a11.6 11.6 0 0 0-6 0C6.5 3.7 5.5 4 5.5 4a4.4 4.4 0 0 0-.1 3.3A4.7 4.7 0 0 0 4.1 10.6c0 4.7 2.8 5.7 5.5 6a2.8 2.8 0 0 0-.8 2.2V22"
+            ></path></svg
+          >Войти через GitHub
+        </button>
+        <p class="auth-note">Токен хранится только в текущей сессии браузера.</p>
+      </div>
+    </section>
+
+    <div class="toast" id="toast" role="status" aria-live="polite">
+      <svg class="icon" viewBox="0 0 24 24"><path d="M5 12l4 4L19 6"></path></svg
+      ><span id="toast-copy">Изменения сохранены</span>
+    </div>
+
+    <script>
+      (() => {
+        const $ = (selector, root = document) => root.querySelector(selector);
+        const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+        const repoScreen = $('#repo-screen');
+        const allScreen = $('#all-screen');
+        const sidebar = $('#sidebar');
+        const drawer = $('#details-panel');
+        const scrim = $('#drawer-scrim');
+        const modal = $('#create-modal');
+        const toast = $('#toast');
+        let toastTimer;
+
+        function showToast(message) {
+          $('#toast-copy').textContent = message;
+          toast.classList.add('show');
+          clearTimeout(toastTimer);
+          toastTimer = setTimeout(() => toast.classList.remove('show'), 2600);
+        }
+
+        function setView(view) {
+          repoScreen.classList.toggle('active', view === 'repo');
+          allScreen.classList.toggle('active', view === 'all');
+          $$('.nav-item').forEach((item) =>
+            item.classList.toggle('active', item.dataset.view === view),
+          );
+          if (view === 'all') $$('.repo-item').forEach((item) => item.classList.remove('active'));
+          if (view === 'repo' && !$('.repo-item.active')) $('.repo-item').classList.add('active');
+          $$('.tab').forEach((tab) => {
+            const active = tab.dataset.view === view;
+            tab.classList.toggle('active', active);
+            tab.setAttribute('aria-selected', String(active));
+          });
+          sidebar.classList.remove('open');
+        }
+
+        $$('[data-view]').forEach((item) =>
+          item.addEventListener('click', (event) => {
+            if (event.target.closest('.tab-close')) return;
+            if (item.classList.contains('repo-item')) {
+              $$('.repo-item').forEach((repo) => repo.classList.remove('active'));
+              item.classList.add('active');
+            }
+            setView(item.dataset.view);
+          }),
+        );
+
+        $$('.tab-close').forEach((button) =>
+          button.addEventListener('click', (event) => {
+            event.stopPropagation();
+            const tab = button.closest('.tab');
+            const wasActive = tab.classList.contains('active');
+            tab.remove();
+            if (wasActive) setView('all');
+          }),
+        );
+
+        $('.new-tab').addEventListener('click', () => {
+          setView('all');
+          showToast('Открыта новая вкладка «Все задачи»');
+        });
+        $('#mobile-menu').addEventListener('click', () => sidebar.classList.toggle('open'));
+
+        function openDrawer(card) {
+          const kind = card.dataset.taskKind || 'issue';
+          $('#drawer-title').value = card.dataset.taskTitle || 'Новая задача';
+          $('#drawer-number').textContent = card.dataset.taskNumber || '#36';
+          $('#drawer-repo').textContent =
+            kind === 'note' ? 'Локальная заметка' : 'mootxed/KotoKitsu';
+          const githubAction = $('#github-action');
+          githubAction.innerHTML =
+            kind === 'note'
+              ? '<svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Превратить в Issue'
+              : kind === 'pending'
+                ? '<svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M20 7h-6V1M4 17h6v6M20 7a8 8 0 0 0-14-2M4 17a8 8 0 0 0 14 2"/></svg>Повторить отправку'
+                : '<svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/></svg>Открыть на GitHub';
+          $('#drawer-sync').innerHTML =
+            kind === 'pending'
+              ? '<svg class="icon" viewBox="0 0 24 24"><path d="M12 7v5l3 2"/><circle cx="12" cy="12" r="9"/></svg><span><strong>Ожидает синхронизации</strong><br>Будет отправлено при подключении к GitHub</span>'
+              : kind === 'note'
+                ? '<svg class="icon" viewBox="0 0 24 24"><path d="M5 12l4 4L19 6"/></svg><span><strong>Сохранено локально</strong><br>Заметка доступна на этом устройстве</span>'
+                : '<svg class="icon" viewBox="0 0 24 24"><path d="M5 12l4 4L19 6"/></svg><span><strong>Сохранено</strong><br>Изменения синхронизированы с GitHub</span>';
+          drawer.classList.add('open');
+          scrim.classList.add('open');
+          setTimeout(() => $('#drawer-title').focus(), 80);
+        }
+
+        function closeDrawer() {
+          drawer.classList.remove('open');
+          scrim.classList.remove('open');
+        }
+        $$('.task-card, .note-card, .list-row').forEach((card) => {
+          card.addEventListener('click', () => openDrawer(card));
+          card.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              openDrawer(card);
+            }
+          });
+        });
+
+        let draggedCard = null;
+        function makeDraggable(card) {
+          if (!card.classList.contains('task-card') || card.dataset.taskKind === 'pending') return;
+          card.draggable = true;
+          card.addEventListener('dragstart', () => {
+            draggedCard = card;
+            card.classList.add('dragging');
+          });
+          card.addEventListener('dragend', () => {
+            card.classList.remove('dragging');
+            draggedCard = null;
+          });
+        }
+        $$('.task-card').forEach(makeDraggable);
+        $$('.kanban-column').forEach((column) => {
+          column.addEventListener('dragover', (event) => {
+            if (draggedCard) event.preventDefault();
+          });
+          column.addEventListener('drop', (event) => {
+            if (!draggedCard) return;
+            event.preventDefault();
+            let list = $('.column-list', column);
+            if (!list) {
+              list = document.createElement('div');
+              list.className = 'column-list';
+              column.append(list);
+            }
+            list.append(draggedCard);
+            showToast(`Задача перемещена в «${$('h2', column).textContent}»`);
+          });
+        });
+        $('#drawer-close').addEventListener('click', closeDrawer);
+        scrim.addEventListener('click', closeDrawer);
+        $('#save-task').addEventListener('click', () => {
+          showToast('Изменения сохранены');
+          closeDrawer();
+        });
+        $('#github-action').addEventListener('click', () => {
+          const copy = $('#github-action').textContent;
+          showToast(
+            copy.includes('Превратить')
+              ? 'Открыта подготовка GitHub Issue'
+              : copy.includes('Повторить')
+                ? 'Задача возвращена в очередь синхронизации'
+                : 'Ссылка на GitHub открыта в новой вкладке',
+          );
+        });
+
+        function openModal() {
+          modal.classList.add('open');
+          setTimeout(() => $('#new-title').focus(), 80);
+        }
+        function closeModal() {
+          modal.classList.remove('open');
+          $('#create-form').reset();
+        }
+        $$('.open-create').forEach((button) => button.addEventListener('click', openModal));
+        $$('.modal-close').forEach((button) => button.addEventListener('click', closeModal));
+        modal.addEventListener('click', (event) => {
+          if (event.target === modal) closeModal();
+        });
+        $$('.label-chip').forEach((chip) =>
+          chip.addEventListener('click', () => chip.classList.toggle('selected')),
+        );
+
+        $('#create-form').addEventListener('submit', (event) => {
+          event.preventDefault();
+          const title = $('#new-title').value.trim();
+          if (!title) return;
+          const local = $('#create-place').value === 'note';
+          if (local) {
+            const note = document.createElement('article');
+            note.className = 'note-card';
+            note.tabIndex = 0;
+            note.dataset.taskTitle = title;
+            note.dataset.taskNumber = 'Локально';
+            note.dataset.taskKind = 'note';
+            note.innerHTML =
+              '<strong></strong><span class="tag tag-local">Локально</span><p>Новая заметка сохранена только на этом устройстве.</p>';
+            $('strong', note).textContent = title;
+            note.addEventListener('click', () => openDrawer(note));
+            $('.question-shelf').append(note);
+          } else {
+            const card = document.createElement('article');
+            card.className = 'task-card pending-card';
+            card.tabIndex = 0;
+            card.dataset.taskTitle = title;
+            card.dataset.taskNumber = 'Локальный черновик';
+            card.dataset.taskKind = 'pending';
+            card.innerHTML =
+              '<div class="pending-line"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M12 7v5l3 2"/><circle cx="12" cy="12" r="9"/></svg>Ожидает синхронизации</div><h3 class="task-title"></h3><p class="task-desc">Задача сохранена на устройстве и готова к отправке.</p><div class="task-tags"><span class="tag tag-priority">Средний</span></div><footer class="task-footer"><span class="tag tag-sync">Отправится в GitHub</span></footer>';
+            $('.task-title', card).textContent = title;
+            card.addEventListener('click', () => openDrawer(card));
+            makeDraggable(card);
+            $('#todo-list').prepend(card);
+          }
+          closeModal();
+          setView('repo');
+          showToast(
+            local ? 'Локальная заметка сохранена' : 'Задача добавлена в очередь синхронизации',
+          );
+        });
+
+        document.addEventListener('keydown', (event) => {
+          const tag = document.activeElement?.tagName;
+          if (
+            (event.key === 'c' || event.key === 'C') &&
+            !['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)
+          )
+            openModal();
+          if (event.key === 'Escape') {
+            closeDrawer();
+            closeModal();
+            sidebar.classList.remove('open');
+          }
+          if (event.ctrlKey && event.key === 'Enter' && modal.classList.contains('open'))
+            $('#create-form').requestSubmit();
+        });
+
+        $$('.sync-button').forEach((button) =>
+          button.addEventListener('click', () => {
+            $('#sync-copy').textContent = 'Синхронизация…';
+            setTimeout(() => {
+              $('#sync-copy').textContent = 'Все изменения сохранены';
+              showToast('Синхронизация завершена');
+            }, 900);
+          }),
+        );
+
+        function filterCards(input, scope, empty) {
+          const query = input.value.trim().toLocaleLowerCase('ru');
+          const cards = $$('.task-card, .note-card', scope);
+          let visible = 0;
+          cards.forEach((card) => {
+            const show =
+              !query || (card.dataset.taskTitle || '').toLocaleLowerCase('ru').includes(query);
+            card.style.display = show ? '' : 'none';
+            if (show) visible += 1;
+          });
+          empty.classList.toggle('visible', visible === 0);
+          $('.board-scroll', scope).style.display = visible === 0 ? 'none' : '';
+          const shelf = $('.question-shelf', scope);
+          if (shelf) shelf.style.display = visible === 0 ? 'none' : '';
+        }
+        $('.board-search').addEventListener('input', (event) =>
+          filterCards(event.target, repoScreen, $('#repo-empty')),
+        );
+        $('.all-search').addEventListener('input', (event) => {
+          const query = event.target.value.trim().toLocaleLowerCase('ru');
+          let visible = 0;
+          $$('.list-row', allScreen).forEach((row) => {
+            const show = !query || row.dataset.taskTitle.toLocaleLowerCase('ru').includes(query);
+            row.style.display = show ? '' : 'none';
+            if (show) visible += 1;
+          });
+          $('#all-list').style.display = visible === 0 ? 'none' : '';
+          $('#all-empty').classList.toggle('visible', visible === 0);
+        });
+
+        $$('[data-layout]').forEach((button) =>
+          button.addEventListener('click', () => {
+            $$('[data-layout]').forEach((item) =>
+              item.classList.toggle('selected', item === button),
+            );
+            const board = button.dataset.layout === 'board';
+            $('#all-list').classList.toggle('hidden', board);
+            $('#all-board').classList.toggle('active', board);
+          }),
+        );
+
+        $$('.toolbar .button').forEach((button) =>
+          button.addEventListener('click', () => {
+            if (button.closest('.segmented')) return;
+            button.classList.toggle('selected');
+          }),
+        );
+
+        $$('.logout-button').forEach((button) =>
+          button.addEventListener('click', () => $('#auth-screen').classList.add('open')),
+        );
+        $$('.github-auth-action').forEach((button) =>
+          button.addEventListener('click', () => $('#auth-screen').classList.add('open')),
+        );
+        $('#login-button').addEventListener('click', () => {
+          $('#auth-screen').classList.remove('open');
+          showToast('GitHub подключён');
+        });
+      })();
+    </script>
+  </body>
+</html>

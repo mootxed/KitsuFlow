@@ -57,8 +57,8 @@ export default defineConfig(({ mode }) => {
           short_name: appName,
           description: 'Local-first GitHub Issues manager',
           lang: 'ru',
-          theme_color: '#18191d',
-          background_color: '#f2f3f5',
+          theme_color: '#3b7de8',
+          background_color: '#f2f2f7',
           display: 'standalone',
           // start_url с правильным base path для GitHub Pages
           start_url: startUrl,

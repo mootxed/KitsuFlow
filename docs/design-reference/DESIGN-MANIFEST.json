@@ -3,18 +3,11 @@
   "title": "6ba820ae-4429-44c6-97fd-40986be6ff82",
   "entryFile": "kitsuflow-workspace.html",
   "sourceFiles": {
-    "all": [
-      "brand-spec.md",
-      "kitsuflow-workspace.html"
-    ],
-    "html": [
-      "kitsuflow-workspace.html"
-    ],
+    "all": ["brand-spec.md", "kitsuflow-workspace.html"],
+    "html": ["kitsuflow-workspace.html"],
     "css": [],
     "scriptsAndComponents": [],
-    "assets": [
-      "brand-spec.md"
-    ]
+    "assets": ["brand-spec.md"]
   },
   "screens": [
     {
@@ -44,18 +37,10 @@
   ],
   "landingPage": {
     "detection": "Inspect files and screen names for a marketing/landing page surface. If present, keep it separate from product app screens.",
-    "requiredSections": [
-      "hero",
-      "value props",
-      "product proof/screenshots",
-      "feature proof",
-      "CTA"
-    ]
+    "requiredSections": ["hero", "value props", "product proof/screenshots", "feature proof", "CTA"]
   },
   "tokens": {
-    "source": [
-      "kitsuflow-workspace.html"
-    ],
+    "source": ["kitsuflow-workspace.html"],
     "required": [
       "background",
       "surface",
@@ -72,9 +57,7 @@
     "note": "Extract/freeze tokens before framework implementation so coding tools do not substitute default theme colors or typography."
   },
   "interactions": {
-    "source": [
-      "kitsuflow-workspace.html"
-    ],
+    "source": ["kitsuflow-workspace.html"],
     "requiredStates": [
       "default",
       "hover",

@@ -24,6 +24,7 @@ export function TaskRow({ item, kind, compact = false }: Props) {
   const pending = kind === 'pending' ? item : null;
   const issue = kind === 'issue' ? item : null;
   const note = kind === 'note' ? item : null;
+
   const linkedOperation = useAppStore((state) =>
     pending
       ? state.outbox.find(
@@ -35,19 +36,23 @@ export function TaskRow({ item, kind, compact = false }: Props) {
         )
       : undefined,
   );
+
   const issueReadOnly = useAppStore((state) =>
     issue
       ? state.repositories.find((repository) => repository.fullName === issue.repositoryFullName)
           ?.permissions.push === false
       : false,
   );
+
   const key =
     note?.id || pending?.clientLocalId || `${issue!.repositoryFullName}#${issue!.issueNumber}`;
+
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: `${kind}:${key}`,
     data: { type: kind, item },
     disabled: kind === 'pending' || issueReadOnly,
   });
+
   const open = (newTab: boolean) =>
     void openEntity(
       note
@@ -65,15 +70,104 @@ export function TaskRow({ item, kind, compact = false }: Props) {
             },
       { newTab, duplicate: newTab },
     );
+
   const taskStatus = note?.status || issue?.derivedStatus || pending?.derivedStatus;
   const taskPriority = issue?.derivedPriority || pending?.derivedPriority;
   const synchronizedItem = note || issue;
+
+  const description = note?.description || issue?.body || pending?.body || '';
+
+  // Compact view (for AllTasks list)
+  if (compact) {
+    return (
+      <div
+        ref={setNodeRef}
+        data-task-key={key}
+        style={{ transform: CSS.Translate.toString(transform), opacity: isDragging ? 0.55 : 1 }}
+        className={`task-row compact ${pending ? 'pending-task' : ''}`}
+        tabIndex={0}
+        onClick={(event) => {
+          if (event.shiftKey) open(true);
+          else if (note) setSelectedTask({ kind: 'note', id: note.id });
+          else if (pending)
+            setSelectedTask({ kind: 'pending-issue', clientLocalId: pending.clientLocalId });
+          else setSelectedTask({ kind: 'issue', key });
+        }}
+        onDoubleClick={() => open(false)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') open(event.shiftKey);
+        }}
+      >
+        {pending || issueReadOnly ? (
+          <span
+            className="drag-handle disabled"
+            title={
+              issueReadOnly
+                ? 'Репозиторий доступен только для чтения'
+                : 'Pending Issue нельзя перемещать'
+            }
+          >
+            <Clock size={13} />
+          </span>
+        ) : (
+          <button
+            className="drag-handle"
+            aria-label="Перетащить задачу"
+            {...listeners}
+            {...attributes}
+          >
+            <GripVertical size={13} />
+          </button>
+        )}
+        <Circle size={9} className={`status-dot status-${taskStatus}`} />
+        <span className="task-title">{item.title}</span>
+        {taskPriority && taskPriority !== 'none' && (
+          <span className={`tag tag-priority-${taskPriority}`}>
+            {PRIORITY_LABELS[taskPriority]}
+          </span>
+        )}
+        {issue &&
+          visibleLabels(issue.labels)
+            .slice(0, 2)
+            .map((label) => (
+              <span
+                key={label.name}
+                className="label"
+                style={{ '--label-color': `#${label.color}` } as React.CSSProperties}
+              >
+                {label.name}
+              </span>
+            ))}
+        {issue?.statusConflict || issue?.priorityConflict ? (
+          <AlertTriangle size={14} className="warning" aria-label="Конфликт системных labels" />
+        ) : null}
+        {synchronizedItem &&
+          synchronizedItem.syncState !== 'synced' &&
+          synchronizedItem.syncState !== 'local' && (
+            <span className={`sync-state ${synchronizedItem.syncState}`}>
+              <CloudOff size={12} /> {SYNC_STATE_LABELS[synchronizedItem.syncState]}
+            </span>
+          )}
+        {pending && (
+          <span className={`sync-state ${linkedOperation?.state || 'attention'}`}>
+            <CloudOff size={12} />{' '}
+            {linkedOperation ? OUTBOX_STATE_LABELS[linkedOperation.state] : 'Требует проверки'}
+          </span>
+        )}
+        <small className="issue-number">
+          {pending ? 'Черновик' : note ? STATUS_LABELS[taskStatus!] : `#${issue?.issueNumber}`}
+        </small>
+      </div>
+    );
+  }
+
+  // Full Kanban Card View
   return (
-    <div
+    <article
       ref={setNodeRef}
       data-task-key={key}
       style={{ transform: CSS.Translate.toString(transform), opacity: isDragging ? 0.55 : 1 }}
-      className={`task-row ${compact ? 'compact' : ''} ${pending ? 'pending-task' : ''}`}
+      className={`task-card ${pending ? 'pending-card' : ''} ${isDragging ? 'dragging' : ''}`}
       tabIndex={0}
       onClick={(event) => {
         if (event.shiftKey) open(true);
@@ -87,66 +181,91 @@ export function TaskRow({ item, kind, compact = false }: Props) {
         if (event.key === 'Enter') open(event.shiftKey);
       }}
     >
-      {pending || issueReadOnly ? (
-        <span
-          className="drag-handle disabled"
-          title={
-            issueReadOnly
-              ? 'Репозиторий доступен только для чтения'
-              : 'Pending Issue нельзя перемещать'
-          }
-        >
-          <Clock size={13} />
-        </span>
+      {pending ? (
+        <div className="pending-line">
+          <Clock size={14} />
+          {linkedOperation
+            ? `${OUTBOX_STATE_LABELS[linkedOperation.state]}`
+            : 'Ожидает синхронизации'}
+        </div>
       ) : (
-        <button
-          className="drag-handle"
-          aria-label="Перетащить задачу"
-          {...listeners}
-          {...attributes}
-        >
-          <GripVertical size={13} />
-        </button>
+        <div className="task-kicker">
+          <span>{note ? 'Локальная заметка' : issue?.repositoryFullName}</span>
+          {issueReadOnly ? (
+            <span className="drag-handle disabled" title="Репозиторий доступен только для чтения">
+              <Clock size={13} />
+            </span>
+          ) : (
+            <button
+              className="drag-handle"
+              title="Перетащить"
+              aria-label="Перетащить карточку"
+              {...listeners}
+              {...attributes}
+            >
+              <GripVertical size={14} />
+            </button>
+          )}
+        </div>
       )}
-      <Circle size={11} className={`status-dot status-${taskStatus}`} />
-      <span className="task-title">{item.title}</span>
-      {taskPriority && (
-        <span
-          className={`priority-dot priority-${taskPriority}`}
-          title={PRIORITY_LABELS[taskPriority]}
-        />
-      )}
-      {issue &&
-        visibleLabels(issue.labels)
-          .slice(0, 2)
-          .map((label) => (
+
+      <h3 className="task-title">{item.title}</h3>
+
+      {description && <p className="task-desc">{description}</p>}
+
+      <div className="task-tags">
+        {taskPriority && taskPriority !== 'none' && (
+          <span className={`tag tag-priority-${taskPriority}`}>
+            {PRIORITY_LABELS[taskPriority]}
+          </span>
+        )}
+
+        {issue &&
+          visibleLabels(issue.labels).map((label) => (
             <span
               key={label.name}
-              className="label"
-              style={{ '--label-color': `#${label.color}` } as React.CSSProperties}
+              className="tag tag-default"
+              style={{
+                backgroundColor: `#${label.color}20`,
+                color: `#${label.color}`,
+                border: `1px solid #${label.color}40`,
+              }}
             >
               {label.name}
             </span>
           ))}
-      {issue?.statusConflict || issue?.priorityConflict ? (
-        <AlertTriangle size={14} className="warning" aria-label="Конфликт системных labels" />
-      ) : null}
-      {synchronizedItem &&
-        synchronizedItem.syncState !== 'synced' &&
-        synchronizedItem.syncState !== 'local' && (
-          <span className={`sync-state ${synchronizedItem.syncState}`}>
-            <CloudOff size={12} /> {SYNC_STATE_LABELS[synchronizedItem.syncState]}
+
+        {note &&
+          note.localTags.map((tag) => (
+            <span key={tag} className="tag tag-default">
+              {tag}
+            </span>
+          ))}
+
+        {note && <span className="tag tag-local">Локально</span>}
+
+        {pending && <span className="tag tag-sync">Отправится в GitHub</span>}
+
+        {(issue?.statusConflict || issue?.priorityConflict) && (
+          <span className="tag tag-local" title="Конфликт системных меток">
+            <AlertTriangle size={12} /> Конфликт
           </span>
         )}
-      {pending && (
-        <span className={`sync-state ${linkedOperation?.state || 'attention'}`}>
-          <CloudOff size={12} />{' '}
-          {linkedOperation ? OUTBOX_STATE_LABELS[linkedOperation.state] : 'Требует проверки'}
+      </div>
+
+      <footer className="task-footer">
+        {issue?.assignees && issue.assignees.length > 0 && issue.assignees[0] ? (
+          <>
+            <span className="mini-avatar">{issue.assignees[0].slice(0, 1).toUpperCase()}</span>
+            <span>{issue.assignees[0]}</span>
+          </>
+        ) : (
+          <span>{note ? 'Без репозитория' : 'Без исполнителя'}</span>
+        )}
+        <span className="issue-number">
+          {pending ? 'Черновик' : note ? '' : `#${issue?.issueNumber}`}
         </span>
-      )}
-      {!compact && (
-        <small>{pending || note ? STATUS_LABELS[taskStatus!] : `#${issue?.issueNumber}`}</small>
-      )}
-    </div>
+      </footer>
+    </article>
   );
 }
