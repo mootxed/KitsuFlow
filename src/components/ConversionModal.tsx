@@ -124,7 +124,12 @@ export function ConversionModal() {
           <span>
             <ArrowRight size={16} /> Преобразовать в GitHub Issue
           </span>
-          <button type="button" className="btn icon-btn" aria-label="Отмена" onClick={() => setNoteId(null)}>
+          <button
+            type="button"
+            className="btn icon-btn"
+            aria-label="Отмена"
+            onClick={() => setNoteId(null)}
+          >
             <X size={16} />
           </button>
         </header>

@@ -47,16 +47,10 @@ export function TaskRow({ item, kind, compact = false }: Props) {
   );
 
   const repo = useAppStore((state) =>
-    issue
-      ? state.repositories.find((r) => r.fullName === issue.repositoryFullName)
-      : undefined,
+    issue ? state.repositories.find((r) => r.fullName === issue.repositoryFullName) : undefined,
   );
 
-  const issueReadOnly = useAppStore((state) =>
-    issue
-      ? !repo || repo.permissions.push === false
-      : false,
-  );
+  const issueReadOnly = issue ? !repo || repo.permissions.push === false : false;
 
   const key =
     note?.id || pending?.clientLocalId || `${issue!.repositoryFullName}#${issue!.issueNumber}`;
@@ -269,9 +263,7 @@ export function TaskRow({ item, kind, compact = false }: Props) {
           </span>
         ))}
 
-        {extraLabelsCount > 0 && (
-          <span className="tag tag-default">+{extraLabelsCount}</span>
-        )}
+        {extraLabelsCount > 0 && <span className="tag tag-default">+{extraLabelsCount}</span>}
 
         {note &&
           note.localTags.map((tag) => (

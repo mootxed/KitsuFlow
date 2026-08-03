@@ -65,7 +65,9 @@ export function RepositoryPicker() {
           </div>
         )}
         <footer>
-          <button className="btn" onClick={() => void refresh()}>Обновить список</button>
+          <button className="btn" onClick={() => void refresh()}>
+            Обновить список
+          </button>
           <button className="btn btn-primary" onClick={() => setOpen(false)}>
             Готово
           </button>

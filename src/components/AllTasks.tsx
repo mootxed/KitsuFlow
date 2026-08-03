@@ -156,11 +156,13 @@ export function AllTasks() {
               );
 
               return (
-                <section key={repo.fullName} className="repo-board-section" style={{ marginBottom: 32 }}>
+                <section
+                  key={repo.fullName}
+                  className="repo-board-section"
+                  style={{ marginBottom: 32 }}
+                >
                   <header className="group-heading" style={{ marginBottom: 16 }}>
-                    <span className="repo-avatar">
-                      {repo.owner.slice(0, 1).toUpperCase()}
-                    </span>
+                    <span className="repo-avatar">{repo.owner.slice(0, 1).toUpperCase()}</span>
                     <h2>{repo.fullName}</h2>
                     <span className="count">{repoIssues.length + repoPendingIssues.length}</span>
                   </header>

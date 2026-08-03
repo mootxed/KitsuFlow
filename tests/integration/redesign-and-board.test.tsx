@@ -36,7 +36,12 @@ const repo2: Repository = {
   accountId: '1001',
 };
 
-const makeIssue = (repo: string, num: number, title: string, status: 'todo' | 'in_progress' | 'done' = 'todo'): GitHubIssue => ({
+const makeIssue = (
+  repo: string,
+  num: number,
+  title: string,
+  status: 'todo' | 'in_progress' | 'done' = 'todo',
+): GitHubIssue => ({
   repositoryFullName: repo,
   nodeId: `node-${num}`,
   issueNumber: num,
@@ -56,7 +61,6 @@ const makeIssue = (repo: string, num: number, title: string, status: 'todo' | 'i
   priorityConflict: false,
   accountId: '1001',
 });
-
 
 const makeNote = (id: string, title: string, repo: string | null = null): LocalNote => ({
   id,
@@ -144,10 +148,26 @@ describe('Redesign, Board Mode & Sync Status Fixes', () => {
       issues: [],
       notes: [],
       pendingIssues: [],
-      tabs: [{ id: 'all', entity: { kind: 'all' }, title: 'Все задачи', position: 0, active: true, accountId: '1001' }],
+      tabs: [
+        {
+          id: 'all',
+          entity: { kind: 'all' },
+          title: 'Все задачи',
+          position: 0,
+          active: true,
+          accountId: '1001',
+        },
+      ],
     });
 
-    render(<Sidebar open={true} onClose={() => { closed = true; }} />);
+    render(
+      <Sidebar
+        open={true}
+        onClose={() => {
+          closed = true;
+        }}
+      />,
+    );
 
     const repoBtn = screen.getByRole('button', { name: /alpha/i });
     fireEvent.click(repoBtn);
@@ -214,7 +234,6 @@ describe('Redesign, Board Mode & Sync Status Fixes', () => {
     expect(screen.getByText('org/alpha')).toBeVisible();
     expect(screen.queryByText('Без репозитория')).not.toBeInTheDocument();
   });
-
 
   it('6. DetailsContent retains write permissions for issue from repo that is not pinned', () => {
     const pinnedRepo1 = { ...repo1, permissions: { pull: true, push: true }, pinned: false }; // Unpinned but has push permissions

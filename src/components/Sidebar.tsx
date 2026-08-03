@@ -15,7 +15,6 @@ function RepositoryLink({
   active: boolean;
   count: number;
   onNavigate?: (() => void) | undefined;
-
 }) {
   const openEntity = useAppStore((state) => state.openEntity);
   const { setNodeRef, isOver } = useDroppable({
@@ -41,7 +40,6 @@ function RepositoryLink({
     </button>
   );
 }
-
 
 /** Баннер для привязки мигрированных legacy-unassigned данных к аккаунту. */
 function LegacyClaimBanner() {
@@ -185,7 +183,6 @@ export function Sidebar({ open = false, onClose }: { open?: boolean; onClose?: (
                 count={repoTaskCount}
                 onNavigate={onClose}
               />
-
             );
           })}
           {!repositories.length && (

@@ -1,7 +1,13 @@
 import { useDroppable } from '@dnd-kit/core';
 import { CheckCircle2, Clock, HelpCircle, Plus, RefreshCw, Search } from 'lucide-react';
 import { useState } from 'react';
-import { STATUS_LABELS, type GitHubIssue, type LocalNote, type PendingIssue, type TaskStatus } from '../domain/types';
+import {
+  STATUS_LABELS,
+  type GitHubIssue,
+  type LocalNote,
+  type PendingIssue,
+  type TaskStatus,
+} from '../domain/types';
 import { useAppStore } from '../state/app-store';
 import { TaskRow } from './TaskRow';
 import { useShallow } from 'zustand/react/shallow';
@@ -250,7 +256,9 @@ export function RepositoryBoard({ repositoryFullName }: { repositoryFullName: st
 
   const repoOutbox = outbox.filter((op) => op.repositoryFullName === repositoryFullName);
   const hasFailed = repoOutbox.some((op) => op.state === 'failed') || Boolean(globalError);
-  const hasAttention = repoOutbox.some((op) => op.state === 'attention' || op.state === 'exhausted');
+  const hasAttention = repoOutbox.some(
+    (op) => op.state === 'attention' || op.state === 'exhausted',
+  );
   const isSyncing = repoOutbox.some((op) => op.state === 'syncing');
   const queuedOpsCount = repoOutbox.filter((op) => op.state === 'pending').length;
 
