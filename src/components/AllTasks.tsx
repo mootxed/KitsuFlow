@@ -3,7 +3,7 @@ import { Filter, LayoutGrid, List, Plus, Search } from 'lucide-react';
 import { STATUS_LABELS, type TaskStatus } from '../domain/types';
 import { useAppStore } from '../state/app-store';
 import { TaskRow } from './TaskRow';
-import { RepositoryBoard } from './RepositoryBoard';
+import { RepositoryKanban } from './RepositoryBoard';
 import { useShallow } from 'zustand/react/shallow';
 
 export function AllTasks() {
@@ -80,7 +80,7 @@ export function AllTasks() {
         <div className="header-actions">
           <div className="segmented">
             <button
-              className={viewMode === 'list' ? 'selected' : ''}
+              className={`btn ${viewMode === 'list' ? 'selected' : ''}`}
               onClick={() => setViewMode('list')}
             >
               <List
@@ -90,7 +90,7 @@ export function AllTasks() {
               Список
             </button>
             <button
-              className={viewMode === 'board' ? 'selected' : ''}
+              className={`btn ${viewMode === 'board' ? 'selected' : ''}`}
               onClick={() => setViewMode('board')}
             >
               <LayoutGrid
@@ -144,11 +144,35 @@ export function AllTasks() {
               <p>Закрепите репозитории в боковой панели, чтобы видеть их на общей доске.</p>
             </div>
           ) : (
-            repositories.map((repo) => (
-              <div key={repo.fullName} style={{ marginBottom: 32 }}>
-                <RepositoryBoard repositoryFullName={repo.fullName} />
-              </div>
-            ))
+            repositories.map((repo) => {
+              const repoIssues = pinnedIssues.filter(
+                (issue) => issue.repositoryFullName === repo.fullName,
+              );
+              const repoPendingIssues = pinnedPendingIssues.filter(
+                (issue) => issue.repositoryFullName === repo.fullName,
+              );
+              const repoNotes = notes.filter(
+                (note) => note.repositoryFullName === repo.fullName && note.status === 'question',
+              );
+
+              return (
+                <section key={repo.fullName} className="repo-board-section" style={{ marginBottom: 32 }}>
+                  <header className="group-heading" style={{ marginBottom: 16 }}>
+                    <span className="repo-avatar">
+                      {repo.owner.slice(0, 1).toUpperCase()}
+                    </span>
+                    <h2>{repo.fullName}</h2>
+                    <span className="count">{repoIssues.length + repoPendingIssues.length}</span>
+                  </header>
+                  <RepositoryKanban
+                    repositoryFullName={repo.fullName}
+                    issues={repoIssues}
+                    pendingIssues={repoPendingIssues}
+                    notes={repoNotes}
+                  />
+                </section>
+              );
+            })
           )}
         </div>
       ) : (

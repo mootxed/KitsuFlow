@@ -9,10 +9,12 @@ function RepositoryLink({
   repository,
   active,
   count,
+  onNavigate,
 }: {
   repository: Repository;
   active: boolean;
   count: number;
+  onNavigate?: () => void;
 }) {
   const openEntity = useAppStore((state) => state.openEntity);
   const { setNodeRef, isOver } = useDroppable({
@@ -23,12 +25,13 @@ function RepositoryLink({
     <button
       ref={setNodeRef}
       className={`sidebar-link repository-link repo-item ${active ? 'active' : ''} ${isOver ? 'drop-target' : ''}`}
-      onClick={(event) =>
+      onClick={(event) => {
         void openEntity(
           { kind: 'repository', repositoryFullName: repository.fullName },
           { newTab: event.shiftKey, duplicate: event.shiftKey },
-        )
-      }
+        );
+        onNavigate?.();
+      }}
       title={`${repository.fullName}. Shift + клик — новая вкладка`}
     >
       <span className="repo-avatar">{repository.owner.slice(0, 1).toUpperCase()}</span>
@@ -37,6 +40,7 @@ function RepositoryLink({
     </button>
   );
 }
+
 
 /** Баннер для привязки мигрированных legacy-unassigned данных к аккаунту. */
 function LegacyClaimBanner() {
@@ -178,7 +182,9 @@ export function Sidebar({ open = false, onClose }: { open?: boolean; onClose?: (
                 repository={repository}
                 active={isRepoActive}
                 count={repoTaskCount}
+                onNavigate={onClose}
               />
+
             );
           })}
           {!repositories.length && (

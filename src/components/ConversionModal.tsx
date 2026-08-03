@@ -124,7 +124,7 @@ export function ConversionModal() {
           <span>
             <ArrowRight size={16} /> Преобразовать в GitHub Issue
           </span>
-          <button type="button" aria-label="Отмена" onClick={() => setNoteId(null)}>
+          <button type="button" className="btn icon-btn" aria-label="Отмена" onClick={() => setNoteId(null)}>
             <X size={16} />
           </button>
         </header>
@@ -222,10 +222,10 @@ export function ConversionModal() {
           Совпавшие локальные теги будут использованы как GitHub labels. Остальные останутся в body.
         </p>
         <footer>
-          <button type="button" onClick={() => setNoteId(null)}>
+          <button type="button" className="btn" onClick={() => setNoteId(null)}>
             Отмена
           </button>
-          <button className="primary" type="submit" disabled={!repository}>
+          <button className="btn btn-primary" type="submit" disabled={!repository}>
             Создать Issue
           </button>
         </footer>

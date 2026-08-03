@@ -52,7 +52,7 @@ export function Workspace() {
             <AlertCircle size={13} /> {error}
           </span>
         )}
-        <button aria-label="Обновить" onClick={() => void refreshIssues()}>
+        <button className="btn icon-btn" aria-label="Обновить" onClick={() => void refreshIssues()}>
           <RefreshCw size={13} />
         </button>
       </div>
@@ -85,7 +85,7 @@ export function Workspace() {
                 </span>
                 {!operation.ambiguityRisk &&
                   (!isFutureAutoRetry || operation.state === 'exhausted') && (
-                    <button onClick={() => void retryOperation(operation.id)}>
+                    <button className="btn btn-sm" onClick={() => void retryOperation(operation.id)}>
                       {operation.state === 'exhausted' ? 'Повторить вручную' : 'Повторить'}
                     </button>
                   )}
@@ -94,6 +94,7 @@ export function Workspace() {
           })}
         </details>
       )}
+
 
       {active.kind === 'all' && <AllTasks />}
       {active.kind === 'repository' && (

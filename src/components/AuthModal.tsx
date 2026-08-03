@@ -15,7 +15,7 @@ export function AuthModal() {
       <section className="modal auth-modal" aria-live="polite">
         <header>
           <span>Вход через GitHub</span>
-          <button aria-label="Закрыть" onClick={logout}>
+          <button className="btn icon-btn" aria-label="Закрыть" onClick={logout}>
             <X size={16} />
           </button>
         </header>
@@ -44,6 +44,7 @@ export function AuthModal() {
             <div className="device-code">
               <strong>{auth.userCode}</strong>
               <button
+                className="btn icon-btn"
                 aria-label="Копировать код"
                 onClick={() => void navigator.clipboard.writeText(auth.userCode)}
               >
@@ -51,7 +52,7 @@ export function AuthModal() {
               </button>
             </div>
             <a
-              className="button primary"
+              className="btn btn-primary"
               target="_blank"
               rel="noreferrer noopener"
               href={auth.verificationUri}
@@ -75,7 +76,7 @@ export function AuthModal() {
             {/* Показываем кнопки повтора в зависимости от доступного метода */}
             {hasPkceProxy ? (
               <button
-                className="primary"
+                className="btn btn-primary"
                 onClick={() => {
                   logout();
                   void loginWithPkce();
@@ -85,7 +86,7 @@ export function AuthModal() {
               </button>
             ) : APP_CONFIG.oauth.legacyDeviceFlowEnabled ? (
               <button
-                className="primary"
+                className="btn btn-primary"
                 onClick={() => {
                   logout();
                   void login();
@@ -95,7 +96,7 @@ export function AuthModal() {
               </button>
             ) : (
               <button
-                className="primary"
+                className="btn btn-primary"
                 onClick={() => {
                   logout();
                   void loginWithPkce();

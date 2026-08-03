@@ -154,7 +154,15 @@ export function App() {
   return (
     <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
       <div className="app-shell">
+        {mobileMenuOpen && (
+          <div
+            className="sidebar-backdrop"
+            onClick={() => setMobileMenuOpen(false)}
+            aria-hidden="true"
+          />
+        )}
         <Sidebar open={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} />
+
         <main className="main-shell">
           <TabBar onToggleMobileMenu={() => setMobileMenuOpen((prev) => !prev)} />
           <Workspace />

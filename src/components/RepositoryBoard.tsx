@@ -1,7 +1,7 @@
 import { useDroppable } from '@dnd-kit/core';
 import { CheckCircle2, Clock, HelpCircle, Plus, RefreshCw, Search } from 'lucide-react';
 import { useState } from 'react';
-import { STATUS_LABELS, type TaskStatus } from '../domain/types';
+import { STATUS_LABELS, type GitHubIssue, type LocalNote, type PendingIssue, type TaskStatus } from '../domain/types';
 import { useAppStore } from '../state/app-store';
 import { TaskRow } from './TaskRow';
 import { useShallow } from 'zustand/react/shallow';
@@ -123,6 +123,73 @@ function QuestionDrop({
   );
 }
 
+export function RepositoryKanban({
+  repositoryFullName,
+  issues,
+  pendingIssues,
+  notes = [],
+}: {
+  repositoryFullName: string;
+  issues: GitHubIssue[];
+  pendingIssues: PendingIssue[];
+  notes?: LocalNote[];
+}) {
+  return (
+    <>
+      <div className="board-scroll">
+        <div className="kanban">
+          {KANBAN_STATUSES.map(({ status, colClass, icon }) => {
+            const sectionIssues = issues.filter((i) => i.derivedStatus === status);
+            const sectionPending = pendingIssues.filter((p) => p.derivedStatus === status);
+            const count = sectionIssues.length + sectionPending.length;
+
+            return (
+              <DropColumn
+                key={status}
+                repositoryFullName={repositoryFullName}
+                status={status}
+                colClass={colClass}
+                icon={icon}
+                count={count}
+              >
+                {sectionIssues
+                  .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+                  .map((issue) => (
+                    <TaskRow
+                      key={`${issue.repositoryFullName}#${issue.issueNumber}`}
+                      item={issue}
+                      kind="issue"
+                    />
+                  ))}
+                {sectionPending
+                  .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+                  .map((issue) => (
+                    <TaskRow key={issue.clientLocalId} item={issue} kind="pending" />
+                  ))}
+              </DropColumn>
+            );
+          })}
+        </div>
+      </div>
+
+      <QuestionDrop repositoryFullName={repositoryFullName}>
+        {notes.map((note) => (
+          <TaskRow key={note.id} item={note} kind="note" />
+        ))}
+      </QuestionDrop>
+    </>
+  );
+}
+
+function formatPendingOps(count: number): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod100 >= 11 && mod100 <= 19) return `${count} операций ожидают отправки`;
+  if (mod10 === 1) return `${count} операция ожидает отправки`;
+  if (mod10 >= 2 && mod10 <= 4) return `${count} операции ожидают отправки`;
+  return `${count} операций ожидают отправки`;
+}
+
 export function RepositoryBoard({ repositoryFullName }: { repositoryFullName: string }) {
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -151,6 +218,10 @@ export function RepositoryBoard({ repositoryFullName }: { repositoryFullName: st
     ),
   );
 
+  const online = useAppStore((state) => state.online);
+  const globalError = useAppStore((state) => state.error);
+  const outbox = useAppStore((state) => state.outbox);
+
   const setCreateOpen = useAppStore((state) => state.setCreateOpen);
   const refreshIssues = useAppStore((state) => state.refreshIssues);
 
@@ -177,6 +248,33 @@ export function RepositoryBoard({ repositoryFullName }: { repositoryFullName: st
 
   const totalCount = issues.length + pendingIssues.length + notes.length;
 
+  const repoOutbox = outbox.filter((op) => op.repositoryFullName === repositoryFullName);
+  const hasFailed = repoOutbox.some((op) => op.state === 'failed') || Boolean(globalError);
+  const hasAttention = repoOutbox.some((op) => op.state === 'attention' || op.state === 'exhausted');
+  const isSyncing = repoOutbox.some((op) => op.state === 'syncing');
+  const queuedOpsCount = repoOutbox.filter((op) => op.state === 'queued').length;
+  const pendingOpsCount = queuedOpsCount > 0 ? queuedOpsCount : pendingIssues.length;
+
+  let syncText = 'Все изменения сохранены';
+  let syncDotClass = 'sync-dot';
+
+  if (hasFailed) {
+    syncText = 'Ошибка синхронизации';
+    syncDotClass = 'sync-dot error';
+  } else if (hasAttention) {
+    syncText = 'Требуется проверка';
+    syncDotClass = 'sync-dot warning';
+  } else if (isSyncing) {
+    syncText = 'Синхронизация…';
+    syncDotClass = 'sync-dot syncing';
+  } else if (pendingOpsCount > 0) {
+    syncText = formatPendingOps(pendingOpsCount);
+    syncDotClass = 'sync-dot pending';
+  } else if (!online) {
+    syncText = 'Сохранено локально';
+    syncDotClass = 'sync-dot offline';
+  }
+
   return (
     <div className="screen repository-board" id="repo-screen">
       <header className="screen-header">
@@ -190,10 +288,10 @@ export function RepositoryBoard({ repositoryFullName }: { repositoryFullName: st
           </p>
           <div className="repo-sync">
             <span className="sync-state">
-              <span className="sync-dot" />
-              <span>Все изменения сохранены</span>
+              <span className={syncDotClass} />
+              <span>{syncText}</span>
             </span>
-            {pendingIssues.length > 0 && (
+            {pendingIssues.length > 0 && pendingOpsCount === 0 && (
               <span className="pending-badge">
                 <Clock size={13} />
                 {pendingIssues.length} ожидает отправки
@@ -245,47 +343,12 @@ export function RepositoryBoard({ repositoryFullName }: { repositoryFullName: st
         </label>
       </div>
 
-      <div className="board-scroll">
-        <div className="kanban">
-          {KANBAN_STATUSES.map(({ status, colClass, icon }) => {
-            const sectionIssues = filteredIssues.filter((i) => i.derivedStatus === status);
-            const sectionPending = filteredPending.filter((p) => p.derivedStatus === status);
-            const count = sectionIssues.length + sectionPending.length;
-
-            return (
-              <DropColumn
-                key={status}
-                repositoryFullName={repositoryFullName}
-                status={status}
-                colClass={colClass}
-                icon={icon}
-                count={count}
-              >
-                {sectionIssues
-                  .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-                  .map((issue) => (
-                    <TaskRow
-                      key={`${issue.repositoryFullName}#${issue.issueNumber}`}
-                      item={issue}
-                      kind="issue"
-                    />
-                  ))}
-                {sectionPending
-                  .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-                  .map((issue) => (
-                    <TaskRow key={issue.clientLocalId} item={issue} kind="pending" />
-                  ))}
-              </DropColumn>
-            );
-          })}
-        </div>
-      </div>
-
-      <QuestionDrop repositoryFullName={repositoryFullName}>
-        {filteredNotes.map((note) => (
-          <TaskRow key={note.id} item={note} kind="note" />
-        ))}
-      </QuestionDrop>
+      <RepositoryKanban
+        repositoryFullName={repositoryFullName}
+        issues={filteredIssues}
+        pendingIssues={filteredPending}
+        notes={filteredNotes}
+      />
     </div>
   );
 }

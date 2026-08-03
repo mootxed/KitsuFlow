@@ -18,6 +18,15 @@ type Props =
   | { item: GitHubIssue; kind: 'issue'; compact?: boolean }
   | { item: PendingIssue; kind: 'pending'; compact?: boolean };
 
+function getContrastTextColor(hexColor: string): string {
+  const hex = hexColor.replace('#', '');
+  const r = parseInt(hex.substring(0, 2) || '00', 16);
+  const g = parseInt(hex.substring(2, 4) || '00', 16);
+  const b = parseInt(hex.substring(4, 6) || '00', 16);
+  const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+  return brightness > 160 ? '#1f2937' : `#${hex}`;
+}
+
 export function TaskRow({ item, kind, compact = false }: Props) {
   const setSelectedTask = useAppStore((state) => state.setSelectedTask);
   const openEntity = useAppStore((state) => state.openEntity);
@@ -37,10 +46,15 @@ export function TaskRow({ item, kind, compact = false }: Props) {
       : undefined,
   );
 
+  const repo = useAppStore((state) =>
+    issue
+      ? state.repositories.find((r) => r.fullName === issue.repositoryFullName)
+      : undefined,
+  );
+
   const issueReadOnly = useAppStore((state) =>
     issue
-      ? state.repositories.find((repository) => repository.fullName === issue.repositoryFullName)
-          ?.permissions.push === false
+      ? !repo || repo.permissions.push === false
       : false,
   );
 
@@ -77,6 +91,10 @@ export function TaskRow({ item, kind, compact = false }: Props) {
 
   const description = note?.description || issue?.body || pending?.body || '';
 
+  const issueLabels = issue ? visibleLabels(issue.labels) : [];
+  const shownLabels = issueLabels.slice(0, 3);
+  const extraLabelsCount = issueLabels.length - 3;
+
   // Compact view (for AllTasks list)
   if (compact) {
     return (
@@ -95,7 +113,10 @@ export function TaskRow({ item, kind, compact = false }: Props) {
         }}
         onDoubleClick={() => open(false)}
         onKeyDown={(event) => {
-          if (event.key === 'Enter') open(event.shiftKey);
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            open(event.shiftKey);
+          }
         }}
       >
         {pending || issueReadOnly ? (
@@ -106,13 +127,17 @@ export function TaskRow({ item, kind, compact = false }: Props) {
                 ? 'Репозиторий доступен только для чтения'
                 : 'Pending Issue нельзя перемещать'
             }
+            onClick={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
           >
             <Clock size={13} />
           </span>
         ) : (
           <button
-            className="drag-handle"
+            className="btn drag-handle"
             aria-label="Перетащить задачу"
+            onClick={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
             {...listeners}
             {...attributes}
           >
@@ -178,7 +203,10 @@ export function TaskRow({ item, kind, compact = false }: Props) {
       }}
       onDoubleClick={() => open(false)}
       onKeyDown={(event) => {
-        if (event.key === 'Enter') open(event.shiftKey);
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          open(event.shiftKey);
+        }
       }}
     >
       {pending ? (
@@ -192,14 +220,21 @@ export function TaskRow({ item, kind, compact = false }: Props) {
         <div className="task-kicker">
           <span>{note ? 'Локальная заметка' : issue?.repositoryFullName}</span>
           {issueReadOnly ? (
-            <span className="drag-handle disabled" title="Репозиторий доступен только для чтения">
+            <span
+              className="drag-handle disabled"
+              title="Репозиторий доступен только для чтения"
+              onClick={(event) => event.stopPropagation()}
+              onMouseDown={(event) => event.stopPropagation()}
+            >
               <Clock size={13} />
             </span>
           ) : (
             <button
-              className="drag-handle"
+              className="btn drag-handle"
               title="Перетащить"
               aria-label="Перетащить карточку"
+              onClick={(event) => event.stopPropagation()}
+              onMouseDown={(event) => event.stopPropagation()}
               {...listeners}
               {...attributes}
             >
@@ -220,20 +255,23 @@ export function TaskRow({ item, kind, compact = false }: Props) {
           </span>
         )}
 
-        {issue &&
-          visibleLabels(issue.labels).map((label) => (
-            <span
-              key={label.name}
-              className="tag tag-default"
-              style={{
-                backgroundColor: `#${label.color}20`,
-                color: `#${label.color}`,
-                border: `1px solid #${label.color}40`,
-              }}
-            >
-              {label.name}
-            </span>
-          ))}
+        {shownLabels.map((label) => (
+          <span
+            key={label.name}
+            className="tag tag-default"
+            style={{
+              backgroundColor: `#${label.color}20`,
+              color: getContrastTextColor(label.color),
+              border: `1px solid #${label.color}40`,
+            }}
+          >
+            {label.name}
+          </span>
+        ))}
+
+        {extraLabelsCount > 0 && (
+          <span className="tag tag-default">+{extraLabelsCount}</span>
+        )}
 
         {note &&
           note.localTags.map((tag) => (
@@ -260,7 +298,7 @@ export function TaskRow({ item, kind, compact = false }: Props) {
             <span>{issue.assignees[0]}</span>
           </>
         ) : (
-          <span>{note ? 'Без репозитория' : 'Без исполнителя'}</span>
+          <span>{note ? note.repositoryFullName || 'Без репозитория' : 'Без исполнителя'}</span>
         )}
         <span className="issue-number">
           {pending ? 'Черновик' : note ? '' : `#${issue?.issueNumber}`}

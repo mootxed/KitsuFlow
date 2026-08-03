@@ -287,8 +287,23 @@
     box-shadow: var(--shadow-xl);
     transform: translateX(-104%);
     transition: transform var(--dur-slow) var(--ease-out);
+    z-index: 60;
   }
   .sidebar.open {
     transform: translateX(0);
   }
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    z-index: 55;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(2px);
+    transition: opacity var(--dur-normal) var(--ease-out);
+  }
 }
+
+.sidebar-backdrop {
+  display: none;
+}
+

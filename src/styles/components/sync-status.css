@@ -101,3 +101,67 @@
   padding: 4px 10px;
   font-size: 12px;
 }
+
+.repo-sync {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.sync-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.sync-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--done-accent);
+  display: inline-block;
+}
+
+.sync-dot.error {
+  background: var(--danger);
+}
+
+.sync-dot.warning {
+  background: var(--question-accent);
+}
+
+.sync-dot.syncing {
+  background: var(--progress-accent);
+  animation: pulse 1.2s infinite ease-in-out;
+}
+
+.sync-dot.pending {
+  background: var(--progress-accent);
+}
+
+.sync-dot.offline {
+  background: var(--muted);
+}
+
+@keyframes pulse {
+  0% { opacity: 0.4; }
+  50% { opacity: 1; }
+  100% { opacity: 0.4; }
+}
+
+.pending-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--question-bg);
+  color: var(--question-accent);
+  border: 1px solid var(--question-border);
+  font-size: 11px;
+  font-weight: 500;
+}
+

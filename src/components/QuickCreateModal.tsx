@@ -157,7 +157,7 @@ export function QuickCreateModal() {
           <span>
             <Plus size={16} /> Новая задача
           </span>
-          <button type="button" aria-label="Закрыть" onClick={() => setOpen(false)}>
+          <button type="button" className="btn icon-btn" aria-label="Закрыть" onClick={() => setOpen(false)}>
             <X size={16} />
           </button>
         </header>
@@ -308,7 +308,7 @@ export function QuickCreateModal() {
               </>
             )}
           </span>
-          <button type="submit" className="primary" disabled={writeBlocked}>
+          <button type="submit" className="btn btn-primary" disabled={writeBlocked}>
             Создать
           </button>
         </footer>

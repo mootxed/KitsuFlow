@@ -1,5 +1,5 @@
 import { Check, ExternalLink, GitPullRequestArrow, Save, Trash2, X } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -13,7 +13,6 @@ import {
 } from '../domain/types';
 import { visibleLabels } from '../domain/github-mapping';
 import { useAppStore } from '../state/app-store';
-import { useShallow } from 'zustand/react/shallow';
 import { PendingIssueContent } from './PendingIssueDocument';
 
 export function DetailsContent({
@@ -25,9 +24,12 @@ export function DetailsContent({
   issue?: GitHubIssue | undefined;
   embedded?: boolean;
 }) {
-  const repositories = useAppStore(
-    useShallow((state) => state.repositories.filter((repo) => repo.pinned)),
+  const allRepositories = useAppStore((state) => state.repositories);
+  const pinnedRepositories = useMemo(
+    () => allRepositories.filter((repo) => repo.pinned),
+    [allRepositories],
   );
+
   const updateNote = useAppStore((state) => state.updateNote);
   const deleteNote = useAppStore((state) => state.deleteNote);
   const requestConversion = useAppStore((state) => state.requestConversion);
@@ -47,7 +49,7 @@ export function DetailsContent({
     const conversionAllowed =
       !isPending &&
       (!note.repositoryFullName ||
-        repositories.find((repository) => repository.fullName === note.repositoryFullName)
+        allRepositories.find((repository) => repository.fullName === note.repositoryFullName)
           ?.permissions.push !== false);
     const save = () =>
       void updateNote(note.id, { title: title.trim() || note.title, description: body });
@@ -117,7 +119,7 @@ export function DetailsContent({
               }
             >
               <option value="">Без репозитория</option>
-              {repositories.map((repository) => (
+              {pinnedRepositories.map((repository) => (
                 <option key={repository.fullName}>{repository.fullName}</option>
               ))}
             </select>
@@ -160,10 +162,11 @@ export function DetailsContent({
           />
         </label>
         <div className="details-actions">
-          <button className="primary" onClick={save} disabled={isPending}>
+          <button className="btn btn-primary" onClick={save} disabled={isPending}>
             <Save size={14} /> Сохранить
           </button>
           <button
+            className="btn"
             disabled={!conversionAllowed}
             title={
               isPending
@@ -181,7 +184,7 @@ export function DetailsContent({
             <GitPullRequestArrow size={14} /> Превратить в Issue
           </button>
           <button
-            className="danger"
+            className="btn btn-danger"
             onClick={() => {
               if (window.confirm('Удалить локальную заметку?')) void deleteNote(note.id);
             }}
@@ -194,7 +197,7 @@ export function DetailsContent({
   }
   if (!issue) return null;
   const canWrite = Boolean(
-    repositories.find((repository) => repository.fullName === issue.repositoryFullName)?.permissions
+    allRepositories.find((repository) => repository.fullName === issue.repositoryFullName)?.permissions
       .push,
   );
   const save = () => void updateIssueFields(issue, { title: title.trim() || issue.title, body });
@@ -327,11 +330,11 @@ export function DetailsContent({
       </p>
       {!canWrite && <p className="hint">Репозиторий доступен только для чтения.</p>}
       <div className="details-actions">
-        <button className="primary" onClick={save} disabled={!canWrite}>
+        <button className="btn btn-primary" onClick={save} disabled={!canWrite}>
           <Save size={14} /> Сохранить
         </button>
         {issue.htmlUrl && (
-          <a className="button" href={issue.htmlUrl} target="_blank" rel="noreferrer">
+          <a className="btn" href={issue.htmlUrl} target="_blank" rel="noreferrer">
             <ExternalLink size={14} /> Открыть на GitHub
           </a>
         )}
@@ -394,7 +397,7 @@ export function DetailsPanel() {
   };
   return (
     <aside className="details-panel" aria-label="Панель задачи">
-      <button className="panel-close" aria-label="Закрыть панель" onClick={close}>
+      <button className="btn icon-btn panel-close" aria-label="Закрыть панель" onClick={close}>
         <X size={16} />
       </button>
       {selected.kind === 'pending-issue' && pendingIssue && (

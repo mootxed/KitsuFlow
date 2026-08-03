@@ -18,14 +18,14 @@ export function RepositoryPicker() {
           <span>
             <FolderGit2 size={16} /> Доступные репозитории
           </span>
-          <button aria-label="Закрыть" onClick={() => setOpen(false)}>
+          <button className="btn icon-btn" aria-label="Закрыть" onClick={() => setOpen(false)}>
             <X size={16} />
           </button>
         </header>
         {!user ? (
           <div className="modal-empty">
             <p>Подключите GitHub, чтобы получить репозитории из установок GitHub App.</p>
-            <button className="primary" onClick={() => void login()}>
+            <button className="btn btn-primary" onClick={() => void login()}>
               Подключить GitHub
             </button>
           </div>
@@ -54,7 +54,7 @@ export function RepositoryPicker() {
             <p>Установите приложение хотя бы в один репозиторий, затем обновите список.</p>
             {APP_CONFIG.github.installUrl && (
               <a
-                className="button primary"
+                className="btn btn-primary"
                 href={APP_CONFIG.github.installUrl}
                 target="_blank"
                 rel="noreferrer"
@@ -65,8 +65,8 @@ export function RepositoryPicker() {
           </div>
         )}
         <footer>
-          <button onClick={() => void refresh()}>Обновить список</button>
-          <button className="primary" onClick={() => setOpen(false)}>
+          <button className="btn" onClick={() => void refresh()}>Обновить список</button>
+          <button className="btn btn-primary" onClick={() => setOpen(false)}>
             Готово
           </button>
         </footer>

@@ -101,7 +101,7 @@ export function PendingIssueContent({
             GitHub мог создать Issue до разрыва сети. Проверьте репозиторий: обычный повтор может
             создать дубликат.
           </span>
-          <a className="button" href={repositoryUrl} target="_blank" rel="noreferrer">
+          <a className="btn" href={repositoryUrl} target="_blank" rel="noreferrer">
             Найти на GitHub <ExternalLink size={13} />
           </a>
         </div>
@@ -196,18 +196,18 @@ export function PendingIssueContent({
       </label>
       <div className="details-actions">
         {editable && (
-          <button className="primary" onClick={save}>
+          <button className="btn btn-primary" onClick={save}>
             <Save size={14} /> Сохранить и отправить
           </button>
         )}
         {operation && operation.state !== 'syncing' && !operation.ambiguityRisk && (
-          <button onClick={() => void retryOperation(operation.id)}>
+          <button className="btn" onClick={() => void retryOperation(operation.id)}>
             <RotateCcw size={14} /> Повторить
           </button>
         )}
         {operation?.ambiguityRisk && !pending.migrationGroupId && (
           <button
-            className="danger"
+            className="btn btn-danger"
             onClick={() => {
               if (
                 window.confirm(
@@ -221,7 +221,7 @@ export function PendingIssueContent({
           </button>
         )}
         <button
-          className="danger"
+          className="btn btn-danger"
           onClick={() => {
             if (window.confirm('Отменить локальную операцию и удалить pending-карточку?'))
               void cancelPendingOperation(pending.clientLocalId);
