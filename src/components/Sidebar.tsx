@@ -14,7 +14,8 @@ function RepositoryLink({
   repository: Repository;
   active: boolean;
   count: number;
-  onNavigate?: () => void;
+  onNavigate?: (() => void) | undefined;
+
 }) {
   const openEntity = useAppStore((state) => state.openEntity);
   const { setNodeRef, isOver } = useDroppable({

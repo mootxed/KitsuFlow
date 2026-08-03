@@ -52,8 +52,11 @@ const makeIssue = (repo: string, num: number, title: string, status: 'todo' | 'i
   updatedAt: '2026-08-01T00:00:00Z',
   cachedAt: '2026-08-01T00:00:00Z',
   syncState: 'synced',
+  statusConflict: false,
+  priorityConflict: false,
   accountId: '1001',
 });
+
 
 const makeNote = (id: string, title: string, repo: string | null = null): LocalNote => ({
   id,
@@ -172,7 +175,8 @@ describe('Redesign, Board Mode & Sync Status Fixes', () => {
       entityKey: 'org/alpha#1',
       repositoryFullName: 'org/alpha',
       payload: {},
-      state: 'queued',
+      state: 'pending',
+
       requestStarted: false,
       attemptCount: 0,
       createdAt: '2026-08-01T00:00:00Z',

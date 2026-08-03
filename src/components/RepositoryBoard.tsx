@@ -252,7 +252,8 @@ export function RepositoryBoard({ repositoryFullName }: { repositoryFullName: st
   const hasFailed = repoOutbox.some((op) => op.state === 'failed') || Boolean(globalError);
   const hasAttention = repoOutbox.some((op) => op.state === 'attention' || op.state === 'exhausted');
   const isSyncing = repoOutbox.some((op) => op.state === 'syncing');
-  const queuedOpsCount = repoOutbox.filter((op) => op.state === 'queued').length;
+  const queuedOpsCount = repoOutbox.filter((op) => op.state === 'pending').length;
+
   const pendingOpsCount = queuedOpsCount > 0 ? queuedOpsCount : pendingIssues.length;
 
   let syncText = 'Все изменения сохранены';
