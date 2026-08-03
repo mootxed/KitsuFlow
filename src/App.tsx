@@ -30,7 +30,8 @@ export function App() {
   const tabs = useAppStore((state) => state.tabs);
   const setRepositoryPickerOpen = useAppStore((state) => state.setRepositoryPickerOpen);
   const setConversionNoteId = useAppStore((state) => state.setConversionNoteId);
-  const logout = useAppStore((state) => state.logout);
+  const cancelAuthFlow = useAppStore((state) => state.cancelAuthFlow);
+  const dismissAuthModal = useAppStore((state) => state.dismissAuthModal);
   const updateNote = useAppStore((state) => state.updateNote);
   const requestConversion = useAppStore((state) => state.requestConversion);
   const changeIssueStatus = useAppStore((state) => state.changeIssueStatus);
@@ -68,16 +69,30 @@ export function App() {
         else if (createDialog.open) setCreateOpen(false);
         else if (repositoryPickerOpen) setRepositoryPickerOpen(false);
         else if (conversionDialog.noteId) setConversionNoteId(null);
-        else if (auth.phase !== 'idle') logout();
+        else if (
+          auth.phase === 'requesting' ||
+          auth.phase === 'waiting' ||
+          auth.phase === 'redirecting'
+        ) {
+          cancelAuthFlow();
+        } else if (
+          auth.phase === 'callback' ||
+          auth.phase === 'success' ||
+          auth.phase === 'error' ||
+          auth.phase === 'expired'
+        ) {
+          dismissAuthModal();
+        }
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [
     auth.phase,
+    cancelAuthFlow,
     conversionDialog.noteId,
     createDialog.open,
-    logout,
+    dismissAuthModal,
     mobileMenuOpen,
     repositoryPickerOpen,
     setConversionNoteId,

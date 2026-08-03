@@ -26,6 +26,9 @@
   border-radius: var(--radius-lg);
   padding: 14px;
   min-height: 150px;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   transition: background var(--dur-fast) var(--ease-out);
 }
 
@@ -36,18 +39,22 @@
 
 .col-todo {
   background: var(--todo-bg);
+  border: 1px solid var(--todo-border);
 }
 
 .col-progress {
   background: var(--progress-bg);
+  border: 1px solid var(--progress-border);
 }
 
 .col-postponed {
   background: var(--postponed-bg);
+  border: 1px solid var(--postponed-border);
 }
 
 .col-done {
   background: var(--done-bg);
+  border: 1px solid var(--done-border);
 }
 
 .col-header {
@@ -56,6 +63,7 @@
   gap: 8px;
   min-height: 38px;
   margin-bottom: 10px;
+  min-width: 0;
 }
 
 .col-status-icon {
@@ -88,25 +96,32 @@
   font-size: 15px;
   font-weight: 700;
   letter-spacing: -0.01em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .col-count {
   margin-left: auto;
   min-width: 22px;
-  padding: 1.5px 6px;
+  padding: 1.5px 7px;
   border-radius: var(--radius-pill);
-  background: rgba(255, 255, 255, 0.65);
-  color: var(--muted);
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--fg-secondary);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   font-family: var(--font-mono);
   text-align: center;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 
 .col-list {
   display: grid;
   gap: 10px;
   min-height: 50px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* Notes shelf */
@@ -118,7 +133,10 @@
   margin-top: 16px;
   border-radius: var(--radius-lg);
   background: var(--question-bg);
+  border: 1px solid var(--question-border);
   padding: 14px;
+  min-width: 0;
+  box-sizing: border-box;
   transition: outline var(--dur-fast) var(--ease-out);
 }
 

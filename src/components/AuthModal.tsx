@@ -6,16 +6,26 @@ export function AuthModal() {
   const auth = useAppStore((state) => state.auth);
   const login = useAppStore((state) => state.login);
   const loginWithPkce = useAppStore((state) => state.loginWithPkce);
-  const logout = useAppStore((state) => state.logout);
+  const cancelAuthFlow = useAppStore((state) => state.cancelAuthFlow);
+  const dismissAuthModal = useAppStore((state) => state.dismissAuthModal);
   const hasPkceProxy = Boolean(import.meta.env.VITE_OAUTH_PROXY_URL);
 
   if (auth.phase === 'idle') return null;
+
+  const handleClose = () => {
+    if (auth.phase === 'requesting' || auth.phase === 'waiting' || auth.phase === 'redirecting') {
+      cancelAuthFlow();
+    } else {
+      dismissAuthModal();
+    }
+  };
+
   return (
     <div className="modal-backdrop">
       <section className="modal auth-modal" aria-live="polite">
         <header>
           <span>Вход через GitHub</span>
-          <button className="btn icon-btn" aria-label="Закрыть" onClick={logout}>
+          <button className="btn icon-btn" aria-label="Закрыть" onClick={handleClose}>
             <X size={16} />
           </button>
         </header>
@@ -78,7 +88,7 @@ export function AuthModal() {
               <button
                 className="btn btn-primary"
                 onClick={() => {
-                  logout();
+                  cancelAuthFlow();
                   void loginWithPkce();
                 }}
               >
@@ -88,7 +98,7 @@ export function AuthModal() {
               <button
                 className="btn btn-primary"
                 onClick={() => {
-                  logout();
+                  cancelAuthFlow();
                   void login();
                 }}
               >
@@ -98,7 +108,7 @@ export function AuthModal() {
               <button
                 className="btn btn-primary"
                 onClick={() => {
-                  logout();
+                  cancelAuthFlow();
                   void loginWithPkce();
                 }}
               >

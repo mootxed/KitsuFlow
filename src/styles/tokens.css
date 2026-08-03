@@ -13,28 +13,28 @@
   --accent-surface: #eef3fd;
 
   /* Column & status tokens */
-  --todo-bg: #fffbeb;
-  --todo-border: #fde68a;
+  --todo-bg: #fff1b8;
+  --todo-border: #efc75e;
   --todo-accent: #d97706;
-  --todo-icon: #f59e0b;
+  --todo-icon: #d97706;
 
-  --progress-bg: #eff6ff;
-  --progress-border: #bfdbfe;
-  --progress-accent: #3b7de8;
-  --progress-icon: #3b82f6;
+  --progress-bg: #ddecff;
+  --progress-border: #9ac5f3;
+  --progress-accent: #2563eb;
+  --progress-icon: #2563eb;
 
-  --postponed-bg: #f5f3ff;
-  --postponed-border: #ddd6fe;
+  --postponed-bg: #eadfff;
+  --postponed-border: #bea5ed;
   --postponed-accent: #7c3aed;
-  --postponed-icon: #8b5cf6;
+  --postponed-icon: #7c3aed;
 
-  --done-bg: #f0fdf4;
-  --done-border: #bbf7d0;
+  --done-bg: #ddf3e3;
+  --done-border: #9dceaa;
   --done-accent: #16a34a;
-  --done-icon: #22c55e;
+  --done-icon: #16a34a;
 
-  --question-bg: #fff1f2;
-  --question-border: #fecdd3;
+  --question-bg: #fbe3e9;
+  --question-border: #eeb3c1;
   --question-accent: #e11d48;
 
   --danger: #dc2626;

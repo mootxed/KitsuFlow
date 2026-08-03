@@ -130,6 +130,8 @@ interface AppState {
   /** Обрабатывает OAuth callback после редиректа с GitHub. */
   handleOAuthCallback: (url: URL) => Promise<boolean>;
   logout: () => void;
+  cancelAuthFlow: () => void;
+  dismissAuthModal: () => void;
   refreshRepositories: () => Promise<void>;
   refreshIssues: (repositoryFullName?: string) => Promise<void>;
   toggleRepository: (fullName: string) => Promise<void>;
@@ -511,12 +513,13 @@ export const useAppStore = create<AppState>((set, get) => {
     const accountId = String(user.id);
     const cached = await loadGitHubAccountState(accountId);
     if (get().sessionGeneration !== generation) return false;
+    const currentAuthPhase = get().auth.phase;
     set({
       api,
       user,
       error: null,
       ...cached,
-      ...(authAfterRestore ? { auth: authAfterRestore } : {}),
+      ...(authAfterRestore && currentAuthPhase !== 'idle' ? { auth: authAfterRestore } : {}),
     });
     const credentials = session.get();
     if (credentials) scheduleTokenRefresh(credentials, generation);
@@ -711,7 +714,9 @@ export const useAppStore = create<AppState>((set, get) => {
         session.set(credentials);
         // Единственная ответственность callback: безопасно обменять и сохранить token.
         // initialize() ниже выполнит ровно одно восстановление пользователя и синхронизацию.
-        set({ auth: { phase: 'success' }, error: null });
+        if (get().auth.phase !== 'idle') {
+          set({ auth: { phase: 'success' }, error: null });
+        }
       } catch (error) {
         if (get().sessionGeneration !== gen) return true;
         session.clear();
@@ -753,6 +758,25 @@ export const useAppStore = create<AppState>((set, get) => {
         sessionGeneration: gen,
         legacyClaim: emptyLegacyClaim(),
       });
+    },
+
+    cancelAuthFlow: () => {
+      deviceFlow.cancel();
+      const currentAuth = get().auth;
+      const isTransient =
+        currentAuth.phase === 'requesting' ||
+        currentAuth.phase === 'waiting' ||
+        currentAuth.phase === 'redirecting' ||
+        currentAuth.phase === 'callback';
+      const gen = isTransient ? get().sessionGeneration + 1 : get().sessionGeneration;
+      set({
+        auth: { phase: 'idle' },
+        sessionGeneration: gen,
+      });
+    },
+
+    dismissAuthModal: () => {
+      set({ auth: { phase: 'idle' } });
     },
 
     refreshRepositories: async () => {

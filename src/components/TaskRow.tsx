@@ -1,6 +1,7 @@
 import { useDraggable } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
 import { AlertTriangle, Circle, Clock, CloudOff, GripVertical } from 'lucide-react';
+import { useEffect, useRef } from 'react';
 import { visibleLabels } from '../domain/github-mapping';
 import {
   OUTBOX_STATE_LABELS,
@@ -51,6 +52,7 @@ export function TaskRow({ item, kind, compact = false }: Props) {
   );
 
   const issueReadOnly = issue ? !repo || repo.permissions.push === false : false;
+  const isDragDisabled = kind === 'pending' || issueReadOnly;
 
   const key =
     note?.id || pending?.clientLocalId || `${issue!.repositoryFullName}#${issue!.issueNumber}`;
@@ -58,8 +60,21 @@ export function TaskRow({ item, kind, compact = false }: Props) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: `${kind}:${key}`,
     data: { type: kind, item },
-    disabled: kind === 'pending' || issueReadOnly,
+    disabled: isDragDisabled,
   });
+
+  const wasDraggedRef = useRef(false);
+
+  useEffect(() => {
+    if (isDragging) {
+      wasDraggedRef.current = true;
+    } else if (wasDraggedRef.current) {
+      const timer = setTimeout(() => {
+        wasDraggedRef.current = false;
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [isDragging]);
 
   const open = (newTab: boolean) =>
     void openEntity(
@@ -79,6 +94,18 @@ export function TaskRow({ item, kind, compact = false }: Props) {
       { newTab, duplicate: newTab },
     );
 
+  const handleClick = (event: React.MouseEvent) => {
+    if (wasDraggedRef.current) {
+      wasDraggedRef.current = false;
+      return;
+    }
+    if (event.shiftKey) open(true);
+    else if (note) setSelectedTask({ kind: 'note', id: note.id });
+    else if (pending)
+      setSelectedTask({ kind: 'pending-issue', clientLocalId: pending.clientLocalId });
+    else setSelectedTask({ kind: 'issue', key });
+  };
+
   const taskStatus = note?.status || issue?.derivedStatus || pending?.derivedStatus;
   const taskPriority = issue?.derivedPriority || pending?.derivedPriority;
   const synchronizedItem = note || issue;
@@ -89,22 +116,20 @@ export function TaskRow({ item, kind, compact = false }: Props) {
   const shownLabels = issueLabels.slice(0, 3);
   const extraLabelsCount = issueLabels.length - 3;
 
+  const dragListeners = isDragDisabled ? {} : listeners;
+  const dragAttributes = isDragDisabled ? {} : attributes;
+
   // Compact view (for AllTasks list)
   if (compact) {
     return (
       <div
         ref={setNodeRef}
         data-task-key={key}
+        data-draggable={String(!isDragDisabled)}
         style={{ transform: CSS.Translate.toString(transform), opacity: isDragging ? 0.55 : 1 }}
-        className={`task-row compact ${pending ? 'pending-task' : ''}`}
+        className={`task-row compact ${pending ? 'pending-task' : ''} ${isDragging ? 'dragging' : ''}`}
         tabIndex={0}
-        onClick={(event) => {
-          if (event.shiftKey) open(true);
-          else if (note) setSelectedTask({ kind: 'note', id: note.id });
-          else if (pending)
-            setSelectedTask({ kind: 'pending-issue', clientLocalId: pending.clientLocalId });
-          else setSelectedTask({ kind: 'issue', key });
-        }}
+        onClick={handleClick}
         onDoubleClick={() => open(false)}
         onKeyDown={(event) => {
           if (event.key === 'Enter' || event.key === ' ') {
@@ -112,6 +137,8 @@ export function TaskRow({ item, kind, compact = false }: Props) {
             open(event.shiftKey);
           }
         }}
+        {...dragListeners}
+        {...dragAttributes}
       >
         {pending || issueReadOnly ? (
           <span
@@ -121,22 +148,13 @@ export function TaskRow({ item, kind, compact = false }: Props) {
                 ? 'Репозиторий доступен только для чтения'
                 : 'Pending Issue нельзя перемещать'
             }
-            onClick={(event) => event.stopPropagation()}
-            onMouseDown={(event) => event.stopPropagation()}
           >
             <Clock size={13} />
           </span>
         ) : (
-          <button
-            className="btn drag-handle"
-            aria-label="Перетащить задачу"
-            onClick={(event) => event.stopPropagation()}
-            onMouseDown={(event) => event.stopPropagation()}
-            {...listeners}
-            {...attributes}
-          >
+          <span className="drag-handle" aria-hidden="true">
             <GripVertical size={13} />
-          </button>
+          </span>
         )}
         <Circle size={9} className={`status-dot status-${taskStatus}`} />
         <span className="task-title">{item.title}</span>
@@ -154,7 +172,7 @@ export function TaskRow({ item, kind, compact = false }: Props) {
                 className="label"
                 style={{ '--label-color': `#${label.color}` } as React.CSSProperties}
               >
-                {label.name}
+                <span className="tag-label-text">{label.name}</span>
               </span>
             ))}
         {issue?.statusConflict || issue?.priorityConflict ? (
@@ -185,16 +203,11 @@ export function TaskRow({ item, kind, compact = false }: Props) {
     <article
       ref={setNodeRef}
       data-task-key={key}
+      data-draggable={String(!isDragDisabled)}
       style={{ transform: CSS.Translate.toString(transform), opacity: isDragging ? 0.55 : 1 }}
       className={`task-card ${pending ? 'pending-card' : ''} ${isDragging ? 'dragging' : ''}`}
       tabIndex={0}
-      onClick={(event) => {
-        if (event.shiftKey) open(true);
-        else if (note) setSelectedTask({ kind: 'note', id: note.id });
-        else if (pending)
-          setSelectedTask({ kind: 'pending-issue', clientLocalId: pending.clientLocalId });
-        else setSelectedTask({ kind: 'issue', key });
-      }}
+      onClick={handleClick}
       onDoubleClick={() => open(false)}
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') {
@@ -202,6 +215,8 @@ export function TaskRow({ item, kind, compact = false }: Props) {
           open(event.shiftKey);
         }
       }}
+      {...dragListeners}
+      {...dragAttributes}
     >
       {pending ? (
         <div className="pending-line">
@@ -214,26 +229,13 @@ export function TaskRow({ item, kind, compact = false }: Props) {
         <div className="task-kicker">
           <span>{note ? 'Локальная заметка' : issue?.repositoryFullName}</span>
           {issueReadOnly ? (
-            <span
-              className="drag-handle disabled"
-              title="Репозиторий доступен только для чтения"
-              onClick={(event) => event.stopPropagation()}
-              onMouseDown={(event) => event.stopPropagation()}
-            >
+            <span className="drag-handle disabled" title="Репозиторий доступен только для чтения">
               <Clock size={13} />
             </span>
           ) : (
-            <button
-              className="btn drag-handle"
-              title="Перетащить"
-              aria-label="Перетащить карточку"
-              onClick={(event) => event.stopPropagation()}
-              onMouseDown={(event) => event.stopPropagation()}
-              {...listeners}
-              {...attributes}
-            >
+            <span className="drag-handle" aria-hidden="true" title="Перетащить">
               <GripVertical size={14} />
-            </button>
+            </span>
           )}
         </div>
       )}
@@ -259,7 +261,7 @@ export function TaskRow({ item, kind, compact = false }: Props) {
               border: `1px solid #${label.color}40`,
             }}
           >
-            {label.name}
+            <span className="tag-label-text">{label.name}</span>
           </span>
         ))}
 
@@ -268,7 +270,7 @@ export function TaskRow({ item, kind, compact = false }: Props) {
         {note &&
           note.localTags.map((tag) => (
             <span key={tag} className="tag tag-default">
-              {tag}
+              <span className="tag-label-text">{tag}</span>
             </span>
           ))}
 
